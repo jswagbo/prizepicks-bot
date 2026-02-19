@@ -1,0 +1,23 @@
+{
+  "name": "prizepicks-bot",
+  "version": "1.0.0",
+  "description": "Data-driven PrizePicks player prop analysis with sharp money intelligence",
+  "main": "src/prizepicks/index.ts",
+  "scripts": {
+    "dev": "tsx src/prizepicks/index.ts",
+    "analyze": "tsx src/run.ts",
+    "build": "tsc",
+    "start": "node dist/prizepicks/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "typescript": "^5.4.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.7.0"
+  }
+}
