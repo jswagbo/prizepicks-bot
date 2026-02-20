@@ -40,6 +40,15 @@ const MATCHUP_BONUS: Record<string, number> = {
 const TREND_BONUS = 0.03;
 const HOME_BONUS = 0.01;
 
+/**
+ * Blowout penalty for OVER picks.
+ * Starters get benched in blowouts, killing counting stats.
+ * Scales with spread size: larger spread = bigger penalty.
+ */
+const BLOWOUT_SPREAD_THRESHOLD = 8; // spreads >= 8 start getting penalized
+const BLOWOUT_PENALTY_PER_POINT = 0.008; // penalty per point of spread above threshold
+const BLOWOUT_MAX_PENALTY = 0.08; // cap the penalty
+
 // ─── Confidence Mapping ──────────────────────────────────────────────────────
 
 /**
@@ -81,8 +90,23 @@ export function scoreProjection(
   // Home court bonus
   const homeBonus = matchup.homeAway === 'home' ? HOME_BONUS : 0;
 
-  // Total score
-  const totalScore = baseEdge + matchupBonus + trendBonus + homeBonus;
+  // Blowout penalty: penalize OVERs in games with large spreads
+  // Starters get benched early in blowouts → counting stats suffer
+  let blowoutPenalty = 0;
+  if (matchup.gameSpread !== null && matchup.gameSpread !== undefined) {
+    const absSpread = Math.abs(matchup.gameSpread);
+    if (absSpread >= BLOWOUT_SPREAD_THRESHOLD) {
+      const excessSpread = absSpread - BLOWOUT_SPREAD_THRESHOLD;
+      blowoutPenalty = Math.min(
+        excessSpread * BLOWOUT_PENALTY_PER_POINT,
+        BLOWOUT_MAX_PENALTY
+      );
+    }
+  }
+
+  // Total score (blowout penalty only applies against OVERs)
+  const rawScore = baseEdge + matchupBonus + trendBonus + homeBonus;
+  const totalScore = rawScore > 0 ? rawScore - blowoutPenalty : rawScore;
 
   // Pick direction
   const pick: 'OVER' | 'UNDER' = totalScore > 0 ? 'OVER' : 'UNDER';
@@ -107,6 +131,10 @@ export function scoreProjection(
   }
   if (homeBonus > 0) {
     reasons.push('Home court advantage');
+  }
+  if (blowoutPenalty > 0 && rawScore > 0) {
+    const absSpread = Math.abs(matchup.gameSpread!);
+    reasons.push(`⚠️ Blowout risk: ${absSpread}pt spread → OVER penalized (-${(blowoutPenalty * 100).toFixed(1)}%)`);
   }
 
   return {

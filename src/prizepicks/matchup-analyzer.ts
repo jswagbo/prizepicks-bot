@@ -24,6 +24,8 @@ export interface MatchupAnalysis {
   estimatedLine: number;
   prizePicksLine: number;
   edge: number; // positive = OVER edge, negative = UNDER edge
+  /** Absolute game spread (e.g., 13.5 means one team is a 13.5pt favorite). Null if unavailable. */
+  gameSpread: number | null;
 }
 
 // ─── Stat Type Mapping ───────────────────────────────────────────────────────
@@ -89,7 +91,8 @@ export async function analyzeMatchup(
   statType: string,
   opponent: string,
   prizePicksLine: number,
-  homeAway: 'home' | 'away'
+  homeAway: 'home' | 'away',
+  gameSpread?: number | null
 ): Promise<MatchupAnalysis> {
   const db = getDatabase();
 
@@ -143,5 +146,6 @@ export async function analyzeMatchup(
     estimatedLine: Math.round(estimatedLine * 100) / 100,
     prizePicksLine,
     edge: Math.round(edge * 10000) / 10000,
+    gameSpread: gameSpread ?? null,
   };
 }

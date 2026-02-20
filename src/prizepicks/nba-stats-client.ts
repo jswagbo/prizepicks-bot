@@ -41,6 +41,8 @@ export interface TodaysGame {
   awayTeamId: string;
   startTime: string;
   status: string;
+  /** Point spread from ESPN odds (negative = home favored). Null if unavailable. */
+  spread: number | null;
 }
 
 export interface TeamDefenseRanking {
@@ -223,6 +225,17 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
     const home = competitors.find((c: any) => c.homeAway === 'home') || {};
     const away = competitors.find((c: any) => c.homeAway === 'away') || {};
 
+    // Extract spread from ESPN odds if available
+    const odds = competition.odds?.[0] || {};
+    let spread: number | null = null;
+    if (odds.spread !== undefined && odds.spread !== null) {
+      spread = parseFloat(odds.spread);
+    } else if (odds.details) {
+      // Parse from details string like "MIN -13.5"
+      const match = (odds.details as string).match(/([-+]?\d+\.?\d*)/);
+      if (match) spread = parseFloat(match[1]);
+    }
+
     return {
       gameId: event.id || '',
       homeTeam: home.team?.abbreviation || '',
@@ -231,6 +244,7 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
       awayTeamId: away.team?.id || '',
       startTime: event.date || '',
       status: event.status?.type?.description || '',
+      spread,
     };
   });
 }
