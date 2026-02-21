@@ -428,7 +428,7 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
     };
   });
 
-  // Fetch spreads from Odds API (most reliable source)
+  // Fetch spreads from Odds API (most reliable source — also provides game list)
   const oddsApiSpreads = await fetchOddsApiSpreads();
 
   // Determine base game list
@@ -448,26 +448,51 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
     games = espnGames;
   }
 
-  // Overlay Odds API spreads (higher priority — DraftKings/FanDuel consensus)
+  // Build a set of teams already in our game list
+  const teamsInGames = new Set<string>();
+  for (const g of games) {
+    teamsInGames.add(g.homeTeam);
+    teamsInGames.add(g.awayTeam);
+  }
+
+  // Overlay Odds API spreads AND add missing games from Odds API
+  // (handles case where ESPN/nba_api shows yesterday's slate but Odds API has today's)
   if (oddsApiSpreads.size > 0) {
-    for (const game of games) {
-      for (const [matchup, spread] of oddsApiSpreads) {
-        const parts = matchup.split(' vs ');
-        const homeAbbr = teamNameToAbbrev(parts[0]?.trim());
-        const awayAbbr = teamNameToAbbrev(parts[1]?.trim());
-        if (
-          (game.homeTeam === homeAbbr && game.awayTeam === awayAbbr) ||
-          (game.homeTeam === awayAbbr && game.awayTeam === homeAbbr)
-        ) {
-          // If the match is reversed (our away = odds home), flip the spread sign
-          if (game.homeTeam === awayAbbr) {
-            game.spread = -spread;
-          } else {
-            game.spread = spread;
-          }
-          console.log(`[Odds API] Matched ${game.awayTeam} @ ${game.homeTeam} → spread: ${game.spread}`);
-          break;
+    for (const [matchup, spread] of oddsApiSpreads) {
+      const parts = matchup.split(' vs ');
+      const homeAbbr = teamNameToAbbrev(parts[0]?.trim());
+      const awayAbbr = teamNameToAbbrev(parts[1]?.trim());
+
+      // Try to match to existing game
+      const existingGame = games.find(
+        g => (g.homeTeam === homeAbbr && g.awayTeam === awayAbbr) ||
+             (g.homeTeam === awayAbbr && g.awayTeam === homeAbbr)
+      );
+
+      if (existingGame) {
+        // Update spread on existing game
+        if (existingGame.homeTeam === awayAbbr) {
+          existingGame.spread = -spread;
+        } else {
+          existingGame.spread = spread;
         }
+        console.log(`[Odds API] Matched ${existingGame.awayTeam} @ ${existingGame.homeTeam} → spread: ${existingGame.spread}`);
+      } else {
+        // Game not in ESPN/nba_api list (exact pair not found) — add from Odds API
+        // This handles early-morning when ESPN shows yesterday's slate
+        games.push({
+          gameId: `odds-${homeAbbr}-${awayAbbr}`,
+          homeTeam: homeAbbr,
+          awayTeam: awayAbbr,
+          homeTeamId: '',
+          awayTeamId: '',
+          startTime: '',
+          status: 'Scheduled',
+          spread,
+        });
+        teamsInGames.add(homeAbbr);
+        teamsInGames.add(awayAbbr);
+        console.log(`[Odds API] Added game: ${awayAbbr} @ ${homeAbbr} (spread: ${spread}) — not in ESPN/nba_api`);
       }
     }
   }
