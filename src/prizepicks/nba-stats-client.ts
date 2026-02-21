@@ -389,114 +389,62 @@ function teamNameToAbbrev(name: string): string {
 
 /**
  * Get today's NBA schedule with spreads.
- * Sources: nba_api (games) + ESPN (fallback) + Odds-API.io (spreads)
+ * Primary: Odds-API.io (game list + spreads from DraftKings/FanDuel)
+ * Fallback: nba_api (game list only, no spreads)
+ * ESPN scoreboard removed — it shows stale/yesterday data and adds confusion.
  */
 export async function getTodaysGames(): Promise<TodaysGame[]> {
-  // Try nba_api first for game list
-  const pyGames = callPythonStats(['today-games']) as TodaysGame[] | null;
-  
-  // Also fetch ESPN for fallback game data
-  const data = await espnFetch(
-    '/site/v2/sports/basketball/nba/scoreboard'
-  ) as { events?: Array<Record<string, unknown>> };
-
-  const espnGames = (data.events || []).map((event: any) => {
-    const competition = event.competitions?.[0] || {};
-    const competitors = competition.competitors || [];
-    const home = competitors.find((c: any) => c.homeAway === 'home') || {};
-    const away = competitors.find((c: any) => c.homeAway === 'away') || {};
-
-    // Extract spread from ESPN odds if available
-    const odds = competition.odds?.[0] || {};
-    let spread: number | null = null;
-    if (odds.spread !== undefined && odds.spread !== null) {
-      spread = parseFloat(odds.spread);
-    } else if (odds.details) {
-      const match = (odds.details as string).match(/([-+]?\d+\.?\d*)/);
-      if (match) spread = parseFloat(match[1]);
-    }
-
-    return {
-      gameId: event.id || '',
-      homeTeam: home.team?.abbreviation || '',
-      awayTeam: away.team?.abbreviation || '',
-      homeTeamId: home.team?.id || '',
-      awayTeamId: away.team?.id || '',
-      startTime: event.date || '',
-      status: event.status?.type?.description || '',
-      spread,
-    };
-  });
-
-  // Fetch spreads from Odds API (most reliable source — also provides game list)
+  // Fetch games + spreads from Odds API (most reliable, has today's actual games)
   const oddsApiSpreads = await fetchOddsApiSpreads();
 
-  // Determine base game list
-  let games: TodaysGame[];
-  if (pyGames && pyGames.length > 0) {
-    // Merge ESPN spreads into nba_api games
-    for (const game of pyGames) {
-      const espnMatch = espnGames.find(
-        (eg: TodaysGame) => eg.homeTeam === game.homeTeam || eg.awayTeam === game.awayTeam
-      );
-      if (espnMatch?.spread != null) {
-        game.spread = espnMatch.spread;
-      }
-    }
-    games = pyGames;
-  } else {
-    games = espnGames;
-  }
-
-  // Build a set of teams already in our game list
+  // Build game list from Odds API
+  const games: TodaysGame[] = [];
   const teamsInGames = new Set<string>();
-  for (const g of games) {
-    teamsInGames.add(g.homeTeam);
-    teamsInGames.add(g.awayTeam);
+
+  for (const [matchup, spread] of oddsApiSpreads) {
+    const parts = matchup.split(' vs ');
+    const homeAbbr = teamNameToAbbrev(parts[0]?.trim());
+    const awayAbbr = teamNameToAbbrev(parts[1]?.trim());
+
+    games.push({
+      gameId: `odds-${homeAbbr}-${awayAbbr}`,
+      homeTeam: homeAbbr,
+      awayTeam: awayAbbr,
+      homeTeamId: '',
+      awayTeamId: '',
+      startTime: '',
+      status: 'Scheduled',
+      spread,
+    });
+    teamsInGames.add(homeAbbr);
+    teamsInGames.add(awayAbbr);
+    console.log(`[Odds API] ${awayAbbr} @ ${homeAbbr} | spread: ${spread}`);
   }
 
-  // Overlay Odds API spreads AND add missing games from Odds API
-  // (handles case where ESPN/nba_api shows yesterday's slate but Odds API has today's)
-  if (oddsApiSpreads.size > 0) {
-    for (const [matchup, spread] of oddsApiSpreads) {
-      const parts = matchup.split(' vs ');
-      const homeAbbr = teamNameToAbbrev(parts[0]?.trim());
-      const awayAbbr = teamNameToAbbrev(parts[1]?.trim());
+  // Fallback: if Odds API returned nothing (no key, API down), try nba_api
+  if (games.length === 0) {
+    console.log('[getTodaysGames] Odds API empty, falling back to nba_api');
+    const pyGames = callPythonStats(['today-games']) as TodaysGame[] | null;
+    if (pyGames && pyGames.length > 0) {
+      return pyGames;
+    }
+  }
 
-      // Try to match to existing game
-      const existingGame = games.find(
-        g => (g.homeTeam === homeAbbr && g.awayTeam === awayAbbr) ||
-             (g.homeTeam === awayAbbr && g.awayTeam === homeAbbr)
-      );
-
-      if (existingGame) {
-        // Update spread on existing game
-        if (existingGame.homeTeam === awayAbbr) {
-          existingGame.spread = -spread;
-        } else {
-          existingGame.spread = spread;
-        }
-        console.log(`[Odds API] Matched ${existingGame.awayTeam} @ ${existingGame.homeTeam} → spread: ${existingGame.spread}`);
-      } else {
-        // Game not in ESPN/nba_api list (exact pair not found) — add from Odds API
-        // This handles early-morning when ESPN shows yesterday's slate
-        games.push({
-          gameId: `odds-${homeAbbr}-${awayAbbr}`,
-          homeTeam: homeAbbr,
-          awayTeam: awayAbbr,
-          homeTeamId: '',
-          awayTeamId: '',
-          startTime: '',
-          status: 'Scheduled',
-          spread,
-        });
-        teamsInGames.add(homeAbbr);
-        teamsInGames.add(awayAbbr);
-        console.log(`[Odds API] Added game: ${awayAbbr} @ ${homeAbbr} (spread: ${spread}) — not in ESPN/nba_api`);
+  // Also check nba_api for any games Odds API missed (no spread posted yet)
+  const pyGames = callPythonStats(['today-games']) as TodaysGame[] | null;
+  if (pyGames) {
+    for (const pg of pyGames) {
+      if (!teamsInGames.has(pg.homeTeam) && !teamsInGames.has(pg.awayTeam)) {
+        pg.spread = null; // no spread available
+        games.push(pg);
+        teamsInGames.add(pg.homeTeam);
+        teamsInGames.add(pg.awayTeam);
+        console.log(`[nba_api] ${pg.awayTeam} @ ${pg.homeTeam} | spread: null (no odds yet)`);
       }
     }
   }
 
+  console.log(`[getTodaysGames] Total: ${games.length} games (${oddsApiSpreads.size} with spreads)`);
   return games;
 }
 
