@@ -56,6 +56,16 @@ function getStatValue(row: Record<string, unknown>, statType: string): number {
   if (lower.includes('pts+rebs+asts') || lower.includes('pts_rebs_asts')) {
     return ((row.pts_rebs_asts as number) || 0);
   }
+  
+  // Handle defensive/offensive rebounds (estimate from total rebounds)
+  // NBA average: ~75% defensive, ~25% offensive
+  if (lower.includes('defensive rebounds') || lower === 'defensive_rebounds') {
+    return ((row.rebounds as number) || 0) * 0.75;
+  }
+  if (lower.includes('offensive rebounds') || lower === 'offensive_rebounds') {
+    return ((row.rebounds as number) || 0) * 0.25;
+  }
+  
   const col = statTypeToColumn(statType);
   return (row[col] as number) || 0;
 }

@@ -9,3 +9,5 @@ export * from './nba-stats-client';
 export * from './matchup-analyzer';
 export * from './results-tracker';
 export * from './pick-scorer';
+export * from './injury-news-client';
+export * from './expert-picks-client';
