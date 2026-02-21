@@ -20,6 +20,10 @@ export interface PrizePicksProjection {
   flashSaleLine: number | null;
   projectionType: string;
   imageUrl: string;
+  /** "standard" = normal line, "demon" = juiced higher, "goblin" = juiced lower */
+  oddsType: string;
+  /** "team" = full game, "team_with_duration" = 1H/1Q props */
+  eventType: string;
 }
 
 interface PPApiResponse {
@@ -38,6 +42,8 @@ interface PPProjectionData {
     is_promo: boolean;
     flash_sale_line_score: number | null;
     projection_type: string;
+    odds_type: string;
+    event_type: string;
     [key: string]: unknown;
   };
   relationships: {
@@ -100,6 +106,8 @@ function parseProjections(response: PPApiResponse): PrizePicksProjection[] {
       flashSaleLine: proj.attributes.flash_sale_line_score,
       projectionType: proj.attributes.projection_type || '',
       imageUrl: (playerAttrs.image_url as string) || '',
+      oddsType: proj.attributes.odds_type || 'standard',
+      eventType: proj.attributes.event_type || 'team',
     };
   });
 }
@@ -117,6 +125,14 @@ export async function getProjections(league?: string): Promise<PrizePicksProject
 
   const json = (await res.json()) as PPApiResponse;
   let projections = parseProjections(json);
+
+  // Filter to standard lines only (exclude demon/goblin juiced lines)
+  // and full-game props only (exclude 1H/1Q duration props)
+  const beforeFilter = projections.length;
+  projections = projections.filter(
+    (p) => p.oddsType === 'standard' && p.eventType === 'team'
+  );
+  console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
 
   if (league) {
     projections = projections.filter(
