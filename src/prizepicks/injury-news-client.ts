@@ -113,22 +113,20 @@ export async function getInjuryReport(): Promise<InjuryReport[]> {
 
     const data = await res.json() as any;
 
-    // ESPN injury response: array of teams, each with injuries array
-    const teams = data?.teams || data || [];
+    // ESPN structure: { injuries: [ { displayName: "Atlanta Hawks", injuries: [...] }, ... ] }
+    const teams = data?.injuries || [];
     for (const teamEntry of (Array.isArray(teams) ? teams : [])) {
-      const teamName = teamEntry?.team?.displayName || teamEntry?.team?.name || '';
-      const teamAbbrev = resolveTeamAbbrev(
-        teamEntry?.team?.abbreviation || teamName
-      );
+      const teamName = teamEntry?.displayName || '';
+      const teamAbbrev = resolveTeamAbbrev(teamName);
 
       const teamInjuries = teamEntry?.injuries || [];
       for (const injury of teamInjuries) {
-        const athlete = injury?.athlete || injury;
+        const athlete = injury?.athlete || {};
         const playerName = athlete?.displayName || athlete?.fullName || '';
         if (!playerName) continue;
 
         const statusRaw = injury?.status || injury?.type?.description || '';
-        const description = injury?.details?.detail || injury?.longComment || injury?.shortComment || '';
+        const description = injury?.longComment || injury?.shortComment || '';
         const lastUpdate = injury?.date || '';
 
         injuries.push({

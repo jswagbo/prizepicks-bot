@@ -1,14 +1,39 @@
 /**
- * Expert Picks Client
- * 
- * Scrapes expert/sharp picks and consensus data from free sources.
- * Used to validate our model's picks against public/expert opinion.
+ * Expert Picks Client — Sportsbook Line Comparison
+ *
+ * Compares PrizePicks lines against DraftKings + FanDuel player props
+ * via Odds-API.io. When PP lines diverge from sharp books, that's signal.
+ *
+ * Key insight: If PrizePicks sets a line at 25.5 but DraftKings has 22.5,
+ * the UNDER has a significant edge — the books think the player will
+ * score closer to 22.5, so PP's 25.5 UNDER is a gift.
  */
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export interface BookLine {
+  book: string;           // "DraftKings" | "FanDuel"
+  playerName: string;
+  statType: string;       // "Points", "Rebounds", "Assists", "Pts+Rebs+Asts", etc.
+  line: number;           // e.g. 22.5
+  overPrice: number;      // decimal odds, e.g. 1.83
+  underPrice: number;     // decimal odds, e.g. 1.91
+}
+
+export interface LineComparison {
+  playerName: string;
+  statType: string;
+  ppLine: number;
+  books: BookLine[];
+  avgBookLine: number;
+  lineDiff: number;       // ppLine - avgBookLine (positive = PP line is higher than books)
+  signal: 'OVER' | 'UNDER' | null;  // which side benefits from the discrepancy
+  signalStrength: number; // 0-1 scale based on magnitude of divergence
+  juiceSide?: 'OVER' | 'UNDER'; // which side books are juicing (lower price = more likely)
+}
+
 export interface ExpertPick {
-  source: string; // "ESPN", "Covers", "ActionNetwork", "PrizePicks Popular"
+  source: string;
   playerName: string;
   statType: string;
   pick: 'OVER' | 'UNDER';
@@ -20,241 +45,321 @@ export interface ExpertPick {
 export interface ConsensusData {
   playerName: string;
   statType: string;
-  overPercent: number; // % of public on OVER
+  overPercent: number;
   underPercent: number;
-  sharpMoney?: 'OVER' | 'UNDER'; // which side sharp money is on
+  sharpMoney?: 'OVER' | 'UNDER';
   expertPicks: ExpertPick[];
 }
 
-// ─── In-Memory Cache ─────────────────────────────────────────────────────────
+// ─── Stat Type Mapping ───────────────────────────────────────────────────────
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
+/** Map PrizePicks stat names → Odds API label stat types */
+const PP_TO_BOOK_STAT: Record<string, string> = {
+  'Points': 'Points',
+  'Rebounds': 'Rebounds',
+  'Assists': 'Assists',
+  'Pts+Rebs+Asts': 'Pts+Rebs+Asts',
+  'Rebs+Asts': 'Rebs+Asts',
+  'Pts+Asts': 'Pts+Asts',
+  'Pts+Rebs': 'Pts+Rebs',
+  'Blks+Stls': 'Blks+Stls', // may not exist in books
+  'Blocked Shots': 'Blocks',
+  'Steals': 'Steals',
+  '3-PT Made': '3 Point FG',
+  'Turnovers': 'Turnovers',
+  'Fantasy Score': 'Fantasy Score',
+  'Double Doubles': 'Double+Double',
+  'Triple Doubles': 'Triple+Double',
+};
+
+/** Reverse map for matching book labels back to PP stat types */
+const BOOK_TO_PP_STAT: Record<string, string> = {};
+for (const [pp, book] of Object.entries(PP_TO_BOOK_STAT)) {
+  BOOK_TO_PP_STAT[book] = pp;
 }
 
-const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 hour
-const expertPicksCache = new Map<string, CacheEntry<ExpertPick[]>>();
-const consensusCache = new Map<string, CacheEntry<ConsensusData>>();
+// ─── Cache ───────────────────────────────────────────────────────────────────
 
-function getCached<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  
-  const age = Date.now() - entry.timestamp;
-  if (age > CACHE_DURATION_MS) {
-    cache.delete(key);
-    return null;
+let bookPropsCache: { data: BookLine[]; timestamp: number } | null = null;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes (lines move)
+
+// ─── Core: Fetch Player Props from Books ─────────────────────────────────────
+
+/**
+ * Fetch all player props from DraftKings + FanDuel for today's NBA games.
+ */
+export async function fetchBookPlayerProps(): Promise<BookLine[]> {
+  if (bookPropsCache && Date.now() - bookPropsCache.timestamp < CACHE_TTL) {
+    console.log(`[Books] Returning cached props (${bookPropsCache.data.length} lines)`);
+    return bookPropsCache.data;
   }
-  
-  return entry.data;
-}
 
-function setCache<T>(cache: Map<string, CacheEntry<T>>, key: string, data: T): void {
-  cache.set(key, { data, timestamp: Date.now() });
-}
-
-// ─── Fetch Helpers ───────────────────────────────────────────────────────────
-
-async function safeFetch(url: string, source: string): Promise<unknown> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-      },
-    });
-    
-    if (!res.ok) {
-      console.log(`[Expert Picks] ${source} returned ${res.status}`);
-      return null;
-    }
-    
-    return res.json();
-  } catch (err) {
-    console.log(`[Expert Picks] ${source} fetch failed:`, err instanceof Error ? err.message : err);
-    return null;
-  }
-}
-
-// ─── ESPN Expert Picks ───────────────────────────────────────────────────────
-
-/**
- * Try to fetch ESPN expert picks/consensus.
- * ESPN doesn't have a public player props expert picks API,
- * so this is a placeholder that returns empty for now.
- */
-async function fetchESPNPicks(): Promise<ExpertPick[]> {
-  console.log('[Expert Picks] ESPN: Not available (no public player props expert picks API)');
-  return [];
-}
-
-// ─── Covers.com Consensus ────────────────────────────────────────────────────
-
-/**
- * Scrape Covers.com for public betting consensus.
- * Note: Covers.com primarily shows game totals/spreads, not player props.
- * This is a placeholder — web scraping would be needed for real data.
- */
-async function fetchCoversPicks(): Promise<ExpertPick[]> {
-  console.log('[Expert Picks] Covers.com: Skipped (requires web scraping, not API-based)');
-  return [];
-}
-
-// ─── Action Network ──────────────────────────────────────────────────────────
-
-/**
- * Check Action Network for free consensus data.
- * Their API is mostly locked behind authentication, so this returns empty.
- */
-async function fetchActionNetworkPicks(): Promise<ExpertPick[]> {
-  console.log('[Expert Picks] Action Network: Not available (requires auth/subscription)');
-  return [];
-}
-
-// ─── PrizePicks Popular Picks ────────────────────────────────────────────────
-
-/**
- * Extract popularity/consensus from PrizePicks API if available.
- * The PrizePicks API may include popularity metadata in projection attributes.
- * This is speculative — would need to inspect actual API responses.
- */
-async function fetchPrizePicksPopular(): Promise<ExpertPick[]> {
-  try {
-    const res = await fetch('https://api.prizepicks.com/projections?league_id=7', {
-      headers: { 'Accept': 'application/json' },
-    });
-    
-    if (!res.ok) {
-      console.log(`[Expert Picks] PrizePicks API error: ${res.status}`);
-      return [];
-    }
-    
-    const data = await res.json() as any;
-    const picks: ExpertPick[] = [];
-    
-    // Check if API includes popularity data (this is hypothetical)
-    // Real implementation would inspect actual response structure
-    for (const proj of data.data || []) {
-      const attrs = proj.attributes || {};
-      const popularity = attrs.popularity_percent; // hypothetical field
-      
-      if (popularity && popularity > 70) {
-        // If more than 70% of users pick one side, it's "popular"
-        const playerData = data.included?.find(
-          (i: any) => i.type === 'new_player' && i.id === proj.relationships?.new_player?.data?.id
-        );
-        
-        if (playerData) {
-          picks.push({
-            source: 'PrizePicks Popular',
-            playerName: playerData.attributes?.name || '',
-            statType: attrs.stat_type || '',
-            pick: popularity > 50 ? 'OVER' : 'UNDER',
-            line: attrs.line_score || 0,
-            confidence: Math.round(popularity / 20), // convert % to 1-5 scale
-          });
-        }
-      }
-    }
-    
-    console.log(`[Expert Picks] PrizePicks Popular: ${picks.length} picks found`);
-    return picks;
-    
-  } catch (err) {
-    console.log('[Expert Picks] PrizePicks Popular error:', err instanceof Error ? err.message : err);
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) {
+    console.error('[Books] ODDS_API_KEY not set');
     return [];
   }
-}
 
-// ─── Main Exports ────────────────────────────────────────────────────────────
+  const allLines: BookLine[] = [];
 
-/**
- * Fetch expert picks from all available sources.
- * Returns cached data if available (1 hour TTL).
- */
-export async function getExpertPicks(): Promise<ExpertPick[]> {
-  const cacheKey = 'all-expert-picks';
-  const cached = getCached(expertPicksCache, cacheKey);
-  if (cached) {
-    // cached — no log spam
-    return cached;
+  try {
+    // 1. Get today's events
+    const eventsRes = await fetch(
+      `https://api.odds-api.io/v3/events?sport=basketball&league=usa-nba&apiKey=${apiKey}`
+    );
+    if (!eventsRes.ok) {
+      console.error(`[Books] Events API error: ${eventsRes.status}`);
+      return [];
+    }
+
+    const events = (await eventsRes.json()) as Array<{
+      id: number;
+      home: string;
+      away: string;
+      date: string;
+      status: string;
+    }>;
+
+    // Filter to pending/today games only
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const pendingEvents = events.filter(e => {
+      const eventDate = e.date.slice(0, 10);
+      return e.status === 'pending' && eventDate === todayStr;
+    });
+
+    console.log(`[Books] ${pendingEvents.length} pending games today`);
+
+    // 2. Fetch player props for each game (with small delay to avoid rate limits)
+    for (const event of pendingEvents) {
+      try {
+        const oddsRes = await fetch(
+          `https://api.odds-api.io/v3/odds?sport=basketball&league=usa-nba` +
+          `&eventId=${event.id}&oddsType=player_props` +
+          `&bookmakers=DraftKings,FanDuel&apiKey=${apiKey}`
+        );
+
+        if (!oddsRes.ok) {
+          console.log(`[Books] Props error for event ${event.id}: ${oddsRes.status}`);
+          continue;
+        }
+
+        const oddsData = (await oddsRes.json()) as {
+          bookmakers: Record<string, Array<{
+            name: string;
+            odds: Array<{
+              label: string;
+              hdp: number;
+              over: string;
+              under: string;
+            }>;
+          }>>;
+        };
+
+        for (const [bookName, markets] of Object.entries(oddsData.bookmakers || {})) {
+          const propsMarket = markets.find(m => m.name === 'Player Props');
+          if (!propsMarket) continue;
+
+          for (const prop of propsMarket.odds) {
+            // Parse label: "Desmond Bane (Points)" → player="Desmond Bane", stat="Points"
+            const match = prop.label.match(/^(.+?)\s*\((.+)\)$/);
+            if (!match) continue;
+
+            allLines.push({
+              book: bookName,
+              playerName: match[1].trim(),
+              statType: match[2].trim(),
+              line: prop.hdp,
+              overPrice: parseFloat(prop.over),
+              underPrice: parseFloat(prop.under),
+            });
+          }
+        }
+
+        // Small delay between requests
+        await new Promise(r => setTimeout(r, 200));
+      } catch (err) {
+        console.log(`[Books] Error fetching props for event ${event.id}:`,
+          err instanceof Error ? err.message : err);
+      }
+    }
+
+    console.log(`[Books] Fetched ${allLines.length} player prop lines across ${pendingEvents.length} games`);
+  } catch (err) {
+    console.error('[Books] Error:', err instanceof Error ? err.message : err);
   }
 
-  console.log('[Expert Picks] Fetching from all sources...');
-  
-  // Fetch from all sources in parallel, ignore failures
-  const [espn, covers, actionNetwork, prizePicksPopular] = await Promise.all([
-    fetchESPNPicks().catch(() => []),
-    fetchCoversPicks().catch(() => []),
-    fetchActionNetworkPicks().catch(() => []),
-    fetchPrizePicksPopular().catch(() => []),
-  ]);
+  bookPropsCache = { data: allLines, timestamp: Date.now() };
+  return allLines;
+}
 
-  const allPicks = [...espn, ...covers, ...actionNetwork, ...prizePicksPopular];
-  
-  console.log(`[Expert Picks] Total: ${allPicks.length} expert picks collected`);
-  console.log(`[Expert Picks] Sources: ESPN=${espn.length}, Covers=${covers.length}, ActionNetwork=${actionNetwork.length}, PP Popular=${prizePicksPopular.length}`);
-  
-  setCache(expertPicksCache, cacheKey, allPicks);
-  return allPicks;
+// ─── Line Comparison ─────────────────────────────────────────────────────────
+
+/**
+ * Compare a PrizePicks projection against sportsbook lines.
+ * Returns signal direction + strength when lines diverge.
+ */
+export function compareLines(
+  playerName: string,
+  ppStatType: string,
+  ppLine: number,
+  bookLines: BookLine[]
+): LineComparison | null {
+  // Normalize stat type for matching
+  const bookStatType = PP_TO_BOOK_STAT[ppStatType] || ppStatType;
+
+  // Find matching book lines (fuzzy match on player name)
+  const playerNameLower = playerName.toLowerCase();
+  const matching = bookLines.filter(bl => {
+    const bookNameLower = bl.playerName.toLowerCase();
+    // Exact match or last-name match
+    return (
+      bookNameLower === playerNameLower ||
+      bookNameLower.split(' ').pop() === playerNameLower.split(' ').pop() &&
+      bookNameLower.split(' ')[0][0] === playerNameLower.split(' ')[0][0]
+    ) && bl.statType === bookStatType;
+  });
+
+  if (matching.length === 0) return null;
+
+  // Average line across books
+  const avgBookLine = matching.reduce((s, bl) => s + bl.line, 0) / matching.length;
+  const lineDiff = ppLine - avgBookLine;
+
+  // Determine signal: if PP line is HIGHER than books, UNDER is the play
+  // (books think actual will be lower than what PP is offering)
+  let signal: 'OVER' | 'UNDER' | null = null;
+  const absDiff = Math.abs(lineDiff);
+
+  // Need at least 1.0 point divergence to be meaningful for counting stats,
+  // or 0.5 for combo stats
+  const threshold = ppLine > 15 ? 1.5 : 1.0;
+  if (absDiff >= threshold) {
+    signal = lineDiff > 0 ? 'UNDER' : 'OVER';
+  }
+
+  // Signal strength: 0-1 based on divergence relative to line
+  // 2-point diff on a 20-point line = 10% = strong signal
+  const signalStrength = Math.min(1, absDiff / (ppLine * 0.15));
+
+  // Check which side books are juicing (lower price = more likely outcome)
+  // Average the juice across books
+  const avgOverPrice = matching.reduce((s, bl) => s + bl.overPrice, 0) / matching.length;
+  const avgUnderPrice = matching.reduce((s, bl) => s + bl.underPrice, 0) / matching.length;
+  const juiceSide: 'OVER' | 'UNDER' | undefined =
+    avgOverPrice < avgUnderPrice ? 'OVER' :
+    avgUnderPrice < avgOverPrice ? 'UNDER' : undefined;
+
+  return {
+    playerName,
+    statType: ppStatType,
+    ppLine,
+    books: matching,
+    avgBookLine,
+    lineDiff: Math.round(lineDiff * 10) / 10,
+    signal,
+    signalStrength: Math.round(signalStrength * 100) / 100,
+    juiceSide,
+  };
+}
+
+// ─── Public API (compatible with pick-scorer interface) ──────────────────────
+
+/**
+ * Fetch "expert picks" — actually sportsbook line comparisons.
+ * Returns ExpertPick[] for backward compatibility with pick-scorer.
+ */
+export async function getExpertPicks(): Promise<ExpertPick[]> {
+  const bookLines = await fetchBookPlayerProps();
+  if (bookLines.length === 0) return [];
+
+  // Convert book lines into ExpertPick format for compatibility
+  // Group by player+stat, find consensus across books
+  const grouped = new Map<string, BookLine[]>();
+  for (const bl of bookLines) {
+    const key = `${bl.playerName}|${bl.statType}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(bl);
+  }
+
+  const picks: ExpertPick[] = [];
+  for (const [, lines] of grouped) {
+    if (lines.length < 1) continue;
+    const first = lines[0];
+    const avgOverPrice = lines.reduce((s, l) => s + l.overPrice, 0) / lines.length;
+    const avgUnderPrice = lines.reduce((s, l) => s + l.underPrice, 0) / lines.length;
+
+    // Only generate a "pick" if books clearly lean one way (juice differential)
+    const juiceDiff = Math.abs(avgOverPrice - avgUnderPrice);
+    if (juiceDiff < 0.15) continue; // not enough lean
+
+    const ppStat = BOOK_TO_PP_STAT[first.statType] || first.statType;
+    picks.push({
+      source: 'Sportsbooks',
+      playerName: first.playerName,
+      statType: ppStat,
+      pick: avgOverPrice < avgUnderPrice ? 'OVER' : 'UNDER',
+      line: first.line,
+      confidence: Math.min(5, Math.round(juiceDiff * 10)),
+      reasoning: `DK/FD juice: over=${avgOverPrice.toFixed(2)} under=${avgUnderPrice.toFixed(2)}`,
+    });
+  }
+
+  console.log(`[Books] Generated ${picks.length} expert picks from sportsbook juice`);
+  return picks;
 }
 
 /**
- * Get consensus data for a specific player/stat combination.
- * Aggregates expert picks and calculates OVER/UNDER percentages.
+ * Get consensus for a specific player/stat by comparing against sportsbook lines.
  */
 export async function getConsensusForPick(
   playerName: string,
   statType: string
 ): Promise<ConsensusData | null> {
-  const cacheKey = `${playerName}-${statType}`;
-  const cached = getCached(consensusCache, cacheKey);
-  if (cached) return cached;
+  const bookLines = await fetchBookPlayerProps();
+  if (bookLines.length === 0) return null;
 
-  const allPicks = await getExpertPicks();
-  
-  // Filter picks for this specific player/stat
-  const matchingPicks = allPicks.filter(
-    (p) =>
-      p.playerName.toLowerCase() === playerName.toLowerCase() &&
-      p.statType.toLowerCase().includes(statType.toLowerCase())
-  );
+  const bookStatType = PP_TO_BOOK_STAT[statType] || statType;
+  const playerNameLower = playerName.toLowerCase();
 
-  if (matchingPicks.length === 0) {
-    return null;
-  }
+  const matching = bookLines.filter(bl => {
+    const bookNameLower = bl.playerName.toLowerCase();
+    return (
+      bookNameLower === playerNameLower ||
+      (bookNameLower.split(' ').pop() === playerNameLower.split(' ').pop() &&
+       bookNameLower.split(' ')[0][0] === playerNameLower.split(' ')[0][0])
+    ) && bl.statType === bookStatType;
+  });
 
-  // Calculate consensus
-  const overCount = matchingPicks.filter((p) => p.pick === 'OVER').length;
-  const underCount = matchingPicks.filter((p) => p.pick === 'UNDER').length;
-  const total = overCount + underCount;
+  if (matching.length === 0) return null;
 
-  const overPercent = total > 0 ? (overCount / total) * 100 : 50;
+  const avgOverPrice = matching.reduce((s, l) => s + l.overPrice, 0) / matching.length;
+  const avgUnderPrice = matching.reduce((s, l) => s + l.underPrice, 0) / matching.length;
+
+  // Convert odds to implied probability
+  const overProb = (1 / avgOverPrice) * 100;
+  const underProb = (1 / avgUnderPrice) * 100;
+  const total = overProb + underProb;
+  const overPercent = Math.round((overProb / total) * 100);
   const underPercent = 100 - overPercent;
 
-  // Determine sharp money (if 70%+ of "high confidence" picks agree)
-  const highConfidencePicks = matchingPicks.filter((p) => (p.confidence || 0) >= 4);
-  let sharpMoney: 'OVER' | 'UNDER' | undefined;
-  
-  if (highConfidencePicks.length >= 2) {
-    const sharpOvers = highConfidencePicks.filter((p) => p.pick === 'OVER').length;
-    const sharpTotal = highConfidencePicks.length;
-    const sharpOverPercent = (sharpOvers / sharpTotal) * 100;
-    
-    if (sharpOverPercent >= 70) sharpMoney = 'OVER';
-    else if (sharpOverPercent <= 30) sharpMoney = 'UNDER';
-  }
+  const sharpMoney: 'OVER' | 'UNDER' | undefined =
+    overPercent >= 55 ? 'OVER' :
+    underPercent >= 55 ? 'UNDER' : undefined;
 
-  const consensus: ConsensusData = {
+  return {
     playerName,
     statType,
     overPercent,
     underPercent,
     sharpMoney,
-    expertPicks: matchingPicks,
+    expertPicks: matching.map(bl => ({
+      source: bl.book,
+      playerName: bl.playerName,
+      statType,
+      pick: (bl.overPrice < bl.underPrice ? 'OVER' : 'UNDER') as 'OVER' | 'UNDER',
+      line: bl.line,
+      reasoning: `${bl.book}: ${bl.line} (o${bl.overPrice} u${bl.underPrice})`,
+    })),
   };
-
-  setCache(consensusCache, cacheKey, consensus);
-  return consensus;
 }
