@@ -159,7 +159,7 @@ export async function scoreProjection(
   let sharpSignal: 'AGREE' | 'DISAGREE' | 'NEUTRAL' = 'NEUTRAL';
 
   try {
-    const consensus = await getConsensusForPick(projection.playerName, projection.statType);
+    const consensus = await getConsensusForPick(projection.playerName, projection.statType, projection.line);
     
     if (consensus && consensus.expertPicks.length >= 2) {
       const ourPickDirection = (baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus) > 0 ? 'OVER' : 'UNDER';
@@ -183,6 +183,23 @@ export async function scoreProjection(
         expertConsensus = expertConsensus 
           ? `${expertConsensus} | ⚠️ Sharp money on ${consensus.sharpMoney} (opposite)`
           : `⚠️ Sharp money on ${consensus.sharpMoney} (opposite)`;
+      }
+
+      // Line comparison research — adjust trust based on investigation
+      const lc = (consensus as any).lineComparison;
+      if (lc?.research) {
+        const research = lc.research;
+        expertConsensus = expertConsensus
+          ? `${expertConsensus} | Books: ${lc.avgBookLine} (diff ${lc.lineDiff > 0 ? '+' : ''}${lc.lineDiff})`
+          : `PP ${projection.line} vs Books ${lc.avgBookLine} (diff ${lc.lineDiff > 0 ? '+' : ''}${lc.lineDiff})`;
+
+        if (research.trustLevel === 'low') {
+          // Research found reasons to distrust the discrepancy — reduce expert bonus
+          expertBonus = Math.max(0, expertBonus - 0.02);
+          expertConsensus += ` | ⚠️ LOW TRUST: ${research.factors[0]}`;
+        } else if (research.trustLevel === 'high') {
+          expertBonus += 0.01;
+        }
       }
       
       console.log(`[Scorer] ${projection.playerName}: Expert consensus = ${expertConsensus || 'neutral'}`);

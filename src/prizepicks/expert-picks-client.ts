@@ -2,12 +2,16 @@
  * Expert Picks Client — Sportsbook Line Comparison
  *
  * Compares PrizePicks lines against DraftKings + FanDuel player props
- * via Odds-API.io. When PP lines diverge from sharp books, that's signal.
+ * via Odds-API.io. When PP lines diverge significantly from sharp books,
+ * that's a signal — but big discrepancies need investigation, not blind trust.
  *
  * Key insight: If PrizePicks sets a line at 25.5 but DraftKings has 22.5,
- * the UNDER has a significant edge — the books think the player will
- * score closer to 22.5, so PP's 25.5 UNDER is a gift.
+ * the UNDER looks appealing — but we should check WHY they differ before
+ * acting on it (injury return, role change, recent hot/cold streak, etc.)
  */
+
+import { getDatabase } from '../core/db/database';
+import { getInjuryReport, type InjuryReport } from './injury-news-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -20,16 +24,23 @@ export interface BookLine {
   underPrice: number;     // decimal odds, e.g. 1.91
 }
 
+export interface DiscrepancyResearch {
+  reason: string;           // human-readable explanation of why lines might differ
+  factors: string[];        // individual factors found
+  trustLevel: 'high' | 'medium' | 'low'; // how much to trust the discrepancy as a signal
+}
+
 export interface LineComparison {
   playerName: string;
   statType: string;
   ppLine: number;
   books: BookLine[];
   avgBookLine: number;
-  lineDiff: number;       // ppLine - avgBookLine (positive = PP line is higher than books)
-  signal: 'OVER' | 'UNDER' | null;  // which side benefits from the discrepancy
-  signalStrength: number; // 0-1 scale based on magnitude of divergence
-  juiceSide?: 'OVER' | 'UNDER'; // which side books are juicing (lower price = more likely)
+  lineDiff: number;       // ppLine - avgBookLine (positive = PP line is higher)
+  signal: 'OVER' | 'UNDER' | null;
+  signalStrength: number; // 0-1 scale
+  juiceSide?: 'OVER' | 'UNDER';
+  research?: DiscrepancyResearch; // investigation into WHY lines differ
 }
 
 export interface ExpertPick {
@@ -49,11 +60,11 @@ export interface ConsensusData {
   underPercent: number;
   sharpMoney?: 'OVER' | 'UNDER';
   expertPicks: ExpertPick[];
+  lineComparison?: LineComparison;
 }
 
 // ─── Stat Type Mapping ───────────────────────────────────────────────────────
 
-/** Map PrizePicks stat names → Odds API label stat types */
 const PP_TO_BOOK_STAT: Record<string, string> = {
   'Points': 'Points',
   'Rebounds': 'Rebounds',
@@ -62,7 +73,7 @@ const PP_TO_BOOK_STAT: Record<string, string> = {
   'Rebs+Asts': 'Rebs+Asts',
   'Pts+Asts': 'Pts+Asts',
   'Pts+Rebs': 'Pts+Rebs',
-  'Blks+Stls': 'Blks+Stls', // may not exist in books
+  'Blks+Stls': 'Blks+Stls',
   'Blocked Shots': 'Blocks',
   'Steals': 'Steals',
   '3-PT Made': '3 Point FG',
@@ -72,7 +83,6 @@ const PP_TO_BOOK_STAT: Record<string, string> = {
   'Triple Doubles': 'Triple+Double',
 };
 
-/** Reverse map for matching book labels back to PP stat types */
 const BOOK_TO_PP_STAT: Record<string, string> = {};
 for (const [pp, book] of Object.entries(PP_TO_BOOK_STAT)) {
   BOOK_TO_PP_STAT[book] = pp;
@@ -81,13 +91,35 @@ for (const [pp, book] of Object.entries(PP_TO_BOOK_STAT)) {
 // ─── Cache ───────────────────────────────────────────────────────────────────
 
 let bookPropsCache: { data: BookLine[]; timestamp: number } | null = null;
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes (lines move)
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+// ─── Name Matching ───────────────────────────────────────────────────────────
+
+/**
+ * Match player names between PP and sportsbooks.
+ * Handles "Desmond Bane" vs "D. Bane" style differences.
+ */
+function namesMatch(a: string, b: string): boolean {
+  // Strip suffixes like Jr., Sr., III, II, IV
+  const clean = (s: string) => s.toLowerCase().trim().replace(/\s+(jr\.?|sr\.?|iii|ii|iv)$/i, '');
+  const aClean = clean(a);
+  const bClean = clean(b);
+  if (aClean === bClean) return true;
+
+  const aParts = aClean.split(/\s+/);
+  const bParts = bClean.split(/\s+/);
+  if (aParts.length < 2 || bParts.length < 2) return false;
+
+  // Last names must match exactly
+  if (aParts[aParts.length - 1] !== bParts[bParts.length - 1]) return false;
+  // First initial must match
+  if (aParts[0][0] !== bParts[0][0]) return false;
+
+  return true;
+}
 
 // ─── Core: Fetch Player Props from Books ─────────────────────────────────────
 
-/**
- * Fetch all player props from DraftKings + FanDuel for today's NBA games.
- */
 export async function fetchBookPlayerProps(): Promise<BookLine[]> {
   if (bookPropsCache && Date.now() - bookPropsCache.timestamp < CACHE_TTL) {
     console.log(`[Books] Returning cached props (${bookPropsCache.data.length} lines)`);
@@ -103,7 +135,6 @@ export async function fetchBookPlayerProps(): Promise<BookLine[]> {
   const allLines: BookLine[] = [];
 
   try {
-    // 1. Get today's events
     const eventsRes = await fetch(
       `https://api.odds-api.io/v3/events?sport=basketball&league=usa-nba&apiKey=${apiKey}`
     );
@@ -113,24 +144,16 @@ export async function fetchBookPlayerProps(): Promise<BookLine[]> {
     }
 
     const events = (await eventsRes.json()) as Array<{
-      id: number;
-      home: string;
-      away: string;
-      date: string;
-      status: string;
+      id: number; home: string; away: string; date: string; status: string;
     }>;
 
-    // Filter to pending/today games only
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
-    const pendingEvents = events.filter(e => {
-      const eventDate = e.date.slice(0, 10);
-      return e.status === 'pending' && eventDate === todayStr;
-    });
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const pendingEvents = events.filter(e =>
+      e.status === 'pending' && e.date.slice(0, 10) === todayStr
+    );
 
     console.log(`[Books] ${pendingEvents.length} pending games today`);
 
-    // 2. Fetch player props for each game (with small delay to avoid rate limits)
     for (const event of pendingEvents) {
       try {
         const oddsRes = await fetch(
@@ -139,20 +162,12 @@ export async function fetchBookPlayerProps(): Promise<BookLine[]> {
           `&bookmakers=DraftKings,FanDuel&apiKey=${apiKey}`
         );
 
-        if (!oddsRes.ok) {
-          console.log(`[Books] Props error for event ${event.id}: ${oddsRes.status}`);
-          continue;
-        }
+        if (!oddsRes.ok) continue;
 
         const oddsData = (await oddsRes.json()) as {
           bookmakers: Record<string, Array<{
             name: string;
-            odds: Array<{
-              label: string;
-              hdp: number;
-              over: string;
-              under: string;
-            }>;
+            odds: Array<{ label: string; hdp: number; over: string; under: string }>;
           }>>;
         };
 
@@ -161,25 +176,30 @@ export async function fetchBookPlayerProps(): Promise<BookLine[]> {
           if (!propsMarket) continue;
 
           for (const prop of propsMarket.odds) {
-            // Parse label: "Desmond Bane (Points)" → player="Desmond Bane", stat="Points"
             const match = prop.label.match(/^(.+?)\s*\((.+)\)$/);
             if (!match) continue;
+
+            const line = prop.hdp;
+            const overPrice = parseFloat(prop.over);
+            const underPrice = parseFloat(prop.under);
+
+            // Skip malformed lines (Double+Double often has undefined hdp)
+            if (line == null || isNaN(line) || isNaN(overPrice) || isNaN(underPrice)) continue;
 
             allLines.push({
               book: bookName,
               playerName: match[1].trim(),
               statType: match[2].trim(),
-              line: prop.hdp,
-              overPrice: parseFloat(prop.over),
-              underPrice: parseFloat(prop.under),
+              line,
+              overPrice,
+              underPrice,
             });
           }
         }
 
-        // Small delay between requests
         await new Promise(r => setTimeout(r, 200));
       } catch (err) {
-        console.log(`[Books] Error fetching props for event ${event.id}:`,
+        console.log(`[Books] Error for event ${event.id}:`,
           err instanceof Error ? err.message : err);
       }
     }
@@ -193,159 +213,290 @@ export async function fetchBookPlayerProps(): Promise<BookLine[]> {
   return allLines;
 }
 
+// ─── Discrepancy Research ────────────────────────────────────────────────────
+
+/**
+ * When PP line diverges significantly from books, investigate WHY.
+ * Checks recent performance, injuries, and trends to explain the gap.
+ */
+async function researchDiscrepancy(
+  playerName: string,
+  statType: string,
+  ppLine: number,
+  avgBookLine: number,
+  lineDiff: number
+): Promise<DiscrepancyResearch> {
+  const factors: string[] = [];
+  let trustLevel: 'high' | 'medium' | 'low' = 'medium';
+
+  const db = getDatabase();
+  const direction = lineDiff > 0 ? 'higher' : 'lower';
+
+  // 1. Check recent game logs for hot/cold streaks
+  try {
+    const recentGames = db.prepare(`
+      SELECT points, rebounds, assists, 
+             points + rebounds + assists as pra,
+             minutes, game_date
+      FROM player_game_logs
+      WHERE player_name = ? AND league = 'NBA'
+      ORDER BY game_date DESC
+      LIMIT 10
+    `).all(playerName) as Array<{
+      points: number; rebounds: number; assists: number;
+      pra: number; minutes: number; game_date: string;
+    }>;
+
+    if (recentGames.length >= 3) {
+      // Figure out which stat column to check
+      const statCol = getStatColumn(statType);
+      if (statCol) {
+        const last3 = recentGames.slice(0, 3);
+        const last3Avg = last3.reduce((s, g) => s + getStatValue(g, statCol), 0) / last3.length;
+        const last10Avg = recentGames.reduce((s, g) => s + getStatValue(g, statCol), 0) / recentGames.length;
+
+        // Is the player on a streak that might explain the PP line?
+        if (last3Avg > last10Avg * 1.15) {
+          factors.push(`🔥 Hot streak: L3 avg ${last3Avg.toFixed(1)} vs L10 avg ${last10Avg.toFixed(1)} — PP may be chasing recency`);
+          if (direction === 'higher') {
+            // PP line is higher AND player is hot → PP might be right, books haven't caught up
+            trustLevel = 'low'; // Don't blindly take UNDER when player is hot
+          }
+        } else if (last3Avg < last10Avg * 0.85) {
+          factors.push(`❄️ Cold streak: L3 avg ${last3Avg.toFixed(1)} vs L10 avg ${last10Avg.toFixed(1)}`);
+          if (direction === 'lower') {
+            trustLevel = 'low'; // Don't blindly take OVER when player is cold
+          }
+        }
+
+        // Check minutes trend (role change?)
+        const last3Min = last3.reduce((s, g) => s + g.minutes, 0) / last3.length;
+        const last10Min = recentGames.reduce((s, g) => s + g.minutes, 0) / recentGames.length;
+        if (Math.abs(last3Min - last10Min) > 4) {
+          const minDir = last3Min > last10Min ? 'up' : 'down';
+          factors.push(`⏱️ Minutes shift: L3 ${last3Min.toFixed(0)}min vs L10 ${last10Min.toFixed(0)}min (${minDir}) — possible role change`);
+          trustLevel = 'low'; // Role changes make discrepancies unreliable
+        }
+
+        // Check game-to-game variance (high variance = less reliable signal)
+        const values = recentGames.map(g => getStatValue(g, statCol));
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
+        const stdDev = Math.sqrt(variance);
+        const cv = mean > 0 ? stdDev / mean : 0;
+        if (cv > 0.4) {
+          factors.push(`📊 High variance: CV=${(cv * 100).toFixed(0)}% — this player is inconsistent, line gaps less meaningful`);
+        }
+      }
+    } else {
+      factors.push(`⚠️ Limited data: only ${recentGames.length} recent games in DB`);
+      trustLevel = 'low';
+    }
+  } catch (err) {
+    // DB errors shouldn't crash the pipeline
+  }
+
+  // 2. Check if player is on the injury report
+  try {
+    const injuries = await getInjuryReport();
+    const playerInjury = injuries.find(
+      inj => namesMatch(inj.playerName, playerName)
+    );
+    if (playerInjury) {
+      factors.push(`🏥 ${playerInjury.status}: ${playerInjury.description.slice(0, 100)}`);
+      if (['Questionable', 'Day-To-Day', 'Doubtful'].includes(playerInjury.status)) {
+        trustLevel = 'low'; // Injury uncertainty makes everything unreliable
+      }
+    }
+
+    // Check for teammate injuries that could boost usage
+    const playerTeamGames = db.prepare(`
+      SELECT DISTINCT opponent FROM player_game_logs 
+      WHERE player_name = ? AND league = 'NBA' 
+      ORDER BY game_date DESC LIMIT 1
+    `).get(playerName) as { opponent: string } | undefined;
+    
+    // Find teammates who are OUT
+    if (playerTeamGames) {
+      const teamPlayers = db.prepare(`
+        SELECT DISTINCT player_name FROM player_game_logs
+        WHERE league = 'NBA' AND player_name != ?
+        ORDER BY game_date DESC LIMIT 50
+      `).all(playerName) as Array<{ player_name: string }>;
+
+      const outTeammates = injuries.filter(inj =>
+        inj.status === 'Out' &&
+        teamPlayers.some(tp => namesMatch(tp.player_name, inj.playerName))
+      );
+
+      if (outTeammates.length > 0) {
+        const names = outTeammates.map(t => t.playerName).join(', ');
+        factors.push(`🔄 Teammate(s) OUT: ${names} — could boost usage/minutes`);
+      }
+    }
+  } catch (err) {
+    // Injury check failed — non-fatal
+  }
+
+  // 3. Build summary
+  if (factors.length === 0) {
+    factors.push('No obvious explanation found — discrepancy may be real edge or PP-specific market dynamics');
+    trustLevel = 'medium';
+  }
+
+  const reason = factors.join(' | ');
+  return { reason, factors, trustLevel };
+}
+
+/** Map PP stat types to DB columns */
+function getStatColumn(statType: string): string | null {
+  const map: Record<string, string> = {
+    'Points': 'points',
+    'Rebounds': 'rebounds',
+    'Assists': 'assists',
+    'Pts+Rebs+Asts': 'pra',
+    'Pts+Rebs': 'pts_rebs',
+    'Pts+Asts': 'pts_asts',
+    'Rebs+Asts': 'rebs_asts',
+    'Steals': 'steals',
+    'Blocked Shots': 'blocks',
+    '3-PT Made': 'three_pointers_made',
+    'Turnovers': 'turnovers',
+  };
+  return map[statType] || null;
+}
+
+/** Extract stat value from game row, including combos */
+function getStatValue(game: any, col: string): number {
+  if (col === 'pra') return (game.points || 0) + (game.rebounds || 0) + (game.assists || 0);
+  if (col === 'pts_rebs') return (game.points || 0) + (game.rebounds || 0);
+  if (col === 'pts_asts') return (game.points || 0) + (game.assists || 0);
+  if (col === 'rebs_asts') return (game.rebounds || 0) + (game.assists || 0);
+  return game[col] || 0;
+}
+
 // ─── Line Comparison ─────────────────────────────────────────────────────────
 
 /**
  * Compare a PrizePicks projection against sportsbook lines.
- * Returns signal direction + strength when lines diverge.
+ * For significant discrepancies, researches WHY the lines differ.
  */
-export function compareLines(
+export async function compareLines(
   playerName: string,
   ppStatType: string,
   ppLine: number,
   bookLines: BookLine[]
-): LineComparison | null {
-  // Normalize stat type for matching
+): Promise<LineComparison | null> {
   const bookStatType = PP_TO_BOOK_STAT[ppStatType] || ppStatType;
 
-  // Find matching book lines (fuzzy match on player name)
-  const playerNameLower = playerName.toLowerCase();
-  const matching = bookLines.filter(bl => {
-    const bookNameLower = bl.playerName.toLowerCase();
-    // Exact match or last-name match
-    return (
-      bookNameLower === playerNameLower ||
-      bookNameLower.split(' ').pop() === playerNameLower.split(' ').pop() &&
-      bookNameLower.split(' ')[0][0] === playerNameLower.split(' ')[0][0]
-    ) && bl.statType === bookStatType;
-  });
+  const matching = bookLines.filter(bl =>
+    namesMatch(bl.playerName, playerName) && bl.statType === bookStatType
+  );
 
   if (matching.length === 0) return null;
 
-  // Average line across books
   const avgBookLine = matching.reduce((s, bl) => s + bl.line, 0) / matching.length;
   const lineDiff = ppLine - avgBookLine;
-
-  // Determine signal: if PP line is HIGHER than books, UNDER is the play
-  // (books think actual will be lower than what PP is offering)
-  let signal: 'OVER' | 'UNDER' | null = null;
   const absDiff = Math.abs(lineDiff);
 
-  // Need at least 1.0 point divergence to be meaningful for counting stats,
-  // or 0.5 for combo stats
-  const threshold = ppLine > 15 ? 1.5 : 1.0;
+  // Signal thresholds — must be meaningful
+  // For high lines (>15), need bigger absolute gap
+  // For low lines (<5), even 0.5 matters
+  let threshold: number;
+  if (ppLine > 20) threshold = 2.0;
+  else if (ppLine > 10) threshold = 1.5;
+  else threshold = 1.0;
+
+  let signal: 'OVER' | 'UNDER' | null = null;
   if (absDiff >= threshold) {
     signal = lineDiff > 0 ? 'UNDER' : 'OVER';
   }
 
-  // Signal strength: 0-1 based on divergence relative to line
-  // 2-point diff on a 20-point line = 10% = strong signal
-  const signalStrength = Math.min(1, absDiff / (ppLine * 0.15));
+  const signalStrength = Math.min(1, absDiff / Math.max(ppLine * 0.1, 1));
 
-  // Check which side books are juicing (lower price = more likely outcome)
-  // Average the juice across books
   const avgOverPrice = matching.reduce((s, bl) => s + bl.overPrice, 0) / matching.length;
   const avgUnderPrice = matching.reduce((s, bl) => s + bl.underPrice, 0) / matching.length;
   const juiceSide: 'OVER' | 'UNDER' | undefined =
-    avgOverPrice < avgUnderPrice ? 'OVER' :
-    avgUnderPrice < avgOverPrice ? 'UNDER' : undefined;
+    Math.abs(avgOverPrice - avgUnderPrice) >= 0.08
+      ? (avgOverPrice < avgUnderPrice ? 'OVER' : 'UNDER')
+      : undefined;
+
+  // Research big discrepancies (≥ threshold)
+  let research: DiscrepancyResearch | undefined;
+  if (absDiff >= threshold) {
+    research = await researchDiscrepancy(playerName, ppStatType, ppLine, avgBookLine, lineDiff);
+  }
 
   return {
     playerName,
     statType: ppStatType,
     ppLine,
     books: matching,
-    avgBookLine,
+    avgBookLine: Math.round(avgBookLine * 10) / 10,
     lineDiff: Math.round(lineDiff * 10) / 10,
     signal,
     signalStrength: Math.round(signalStrength * 100) / 100,
     juiceSide,
+    research,
   };
 }
 
-// ─── Public API (compatible with pick-scorer interface) ──────────────────────
+// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Fetch "expert picks" — actually sportsbook line comparisons.
- * Returns ExpertPick[] for backward compatibility with pick-scorer.
+ * Get expert picks — only returns picks where there's a REAL discrepancy
+ * between PP and books AND research doesn't flag it as untrustworthy.
+ * 
+ * Much more selective than before — quality over quantity.
  */
 export async function getExpertPicks(): Promise<ExpertPick[]> {
-  const bookLines = await fetchBookPlayerProps();
-  if (bookLines.length === 0) return [];
-
-  // Convert book lines into ExpertPick format for compatibility
-  // Group by player+stat, find consensus across books
-  const grouped = new Map<string, BookLine[]>();
-  for (const bl of bookLines) {
-    const key = `${bl.playerName}|${bl.statType}`;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key)!.push(bl);
-  }
-
-  const picks: ExpertPick[] = [];
-  for (const [, lines] of grouped) {
-    if (lines.length < 1) continue;
-    const first = lines[0];
-    const avgOverPrice = lines.reduce((s, l) => s + l.overPrice, 0) / lines.length;
-    const avgUnderPrice = lines.reduce((s, l) => s + l.underPrice, 0) / lines.length;
-
-    // Only generate a "pick" if books clearly lean one way (juice differential)
-    const juiceDiff = Math.abs(avgOverPrice - avgUnderPrice);
-    if (juiceDiff < 0.15) continue; // not enough lean
-
-    const ppStat = BOOK_TO_PP_STAT[first.statType] || first.statType;
-    picks.push({
-      source: 'Sportsbooks',
-      playerName: first.playerName,
-      statType: ppStat,
-      pick: avgOverPrice < avgUnderPrice ? 'OVER' : 'UNDER',
-      line: first.line,
-      confidence: Math.min(5, Math.round(juiceDiff * 10)),
-      reasoning: `DK/FD juice: over=${avgOverPrice.toFixed(2)} under=${avgUnderPrice.toFixed(2)}`,
-    });
-  }
-
-  console.log(`[Books] Generated ${picks.length} expert picks from sportsbook juice`);
-  return picks;
+  // This function exists for backward compatibility with pick-scorer.
+  // The real value is in compareLines() which is used per-projection.
+  // We return an empty array — the scorer should use getConsensusForPick() instead.
+  console.log('[Books] getExpertPicks() deprecated — use compareLines() per projection');
+  return [];
 }
 
 /**
  * Get consensus for a specific player/stat by comparing against sportsbook lines.
+ * Includes line comparison research for discrepancies.
  */
 export async function getConsensusForPick(
   playerName: string,
-  statType: string
+  statType: string,
+  ppLine?: number
 ): Promise<ConsensusData | null> {
   const bookLines = await fetchBookPlayerProps();
   if (bookLines.length === 0) return null;
 
   const bookStatType = PP_TO_BOOK_STAT[statType] || statType;
-  const playerNameLower = playerName.toLowerCase();
 
-  const matching = bookLines.filter(bl => {
-    const bookNameLower = bl.playerName.toLowerCase();
-    return (
-      bookNameLower === playerNameLower ||
-      (bookNameLower.split(' ').pop() === playerNameLower.split(' ').pop() &&
-       bookNameLower.split(' ')[0][0] === playerNameLower.split(' ')[0][0])
-    ) && bl.statType === bookStatType;
-  });
+  const matching = bookLines.filter(bl =>
+    namesMatch(bl.playerName, playerName) && bl.statType === bookStatType
+  );
 
   if (matching.length === 0) return null;
 
   const avgOverPrice = matching.reduce((s, l) => s + l.overPrice, 0) / matching.length;
   const avgUnderPrice = matching.reduce((s, l) => s + l.underPrice, 0) / matching.length;
 
-  // Convert odds to implied probability
+  // Implied probability from odds
   const overProb = (1 / avgOverPrice) * 100;
   const underProb = (1 / avgUnderPrice) * 100;
   const total = overProb + underProb;
   const overPercent = Math.round((overProb / total) * 100);
   const underPercent = 100 - overPercent;
 
+  // Sharp money: only flag if clear lean (≥55%)
   const sharpMoney: 'OVER' | 'UNDER' | undefined =
     overPercent >= 55 ? 'OVER' :
     underPercent >= 55 ? 'UNDER' : undefined;
+
+  // Line comparison with research (if PP line provided)
+  let lineComparison: LineComparison | undefined;
+  if (ppLine != null) {
+    lineComparison = await compareLines(playerName, statType, ppLine, bookLines) || undefined;
+  }
 
   return {
     playerName,
@@ -359,7 +510,8 @@ export async function getConsensusForPick(
       statType,
       pick: (bl.overPrice < bl.underPrice ? 'OVER' : 'UNDER') as 'OVER' | 'UNDER',
       line: bl.line,
-      reasoning: `${bl.book}: ${bl.line} (o${bl.overPrice} u${bl.underPrice})`,
+      reasoning: `${bl.book}: line ${bl.line} (o${bl.overPrice.toFixed(2)} u${bl.underPrice.toFixed(2)})`,
     })),
+    lineComparison,
   };
 }
