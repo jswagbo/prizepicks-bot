@@ -177,7 +177,7 @@ export async function getExpertPicks(): Promise<ExpertPick[]> {
   const cacheKey = 'all-expert-picks';
   const cached = getCached(expertPicksCache, cacheKey);
   if (cached) {
-    console.log('[Expert Picks] Using cached data');
+    // cached — no log spam
     return cached;
   }
 

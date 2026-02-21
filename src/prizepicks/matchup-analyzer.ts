@@ -56,6 +56,15 @@ function getStatValue(row: Record<string, unknown>, statType: string): number {
   if (lower.includes('pts+rebs+asts') || lower.includes('pts_rebs_asts')) {
     return ((row.pts_rebs_asts as number) || 0);
   }
+  if (lower === 'pts+rebs') {
+    return ((row.points as number) || 0) + ((row.rebounds as number) || 0);
+  }
+  if (lower === 'pts+asts') {
+    return ((row.points as number) || 0) + ((row.assists as number) || 0);
+  }
+  if (lower === 'rebs+asts') {
+    return ((row.rebounds as number) || 0) + ((row.assists as number) || 0);
+  }
   
   // Handle defensive/offensive rebounds (estimate from total rebounds)
   // NBA average: ~75% defensive, ~25% offensive
