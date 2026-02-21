@@ -96,12 +96,22 @@ export async function analyzeMatchup(
 ): Promise<MatchupAnalysis> {
   const db = getDatabase();
 
-  // Fetch game logs from DB
-  const gameLogs = db.prepare(`
+  // Ensure player data is in DB (fetches from ESPN if missing)
+  let gameLogs = db.prepare(`
     SELECT * FROM player_game_logs
     WHERE player_name = ? AND league = 'NBA'
     ORDER BY game_date DESC
   `).all(playerName) as Array<Record<string, unknown>>;
+
+  // If no cached data, trigger a fetch via getPlayerAverages (which caches to DB)
+  if (gameLogs.length === 0) {
+    await getPlayerAverages(playerName, 20);
+    gameLogs = db.prepare(`
+      SELECT * FROM player_game_logs
+      WHERE player_name = ? AND league = 'NBA'
+      ORDER BY game_date DESC
+    `).all(playerName) as Array<Record<string, unknown>>;
+  }
 
   // Compute averages
   const computeAvg = (logs: Array<Record<string, unknown>>) => {
