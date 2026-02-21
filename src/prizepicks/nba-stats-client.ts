@@ -266,18 +266,136 @@ function cacheGameLogs(playerName: string, league: string, entries: GameLogEntry
   insertMany(entries);
 }
 
+// ─── Odds API ────────────────────────────────────────────────────────────────
+
+const ODDS_API_BASE = 'https://api.odds-api.io/v3';
+
+interface OddsApiEvent {
+  id: number;
+  home: string;
+  away: string;
+  date: string;
+  sport: { slug: string };
+  league: { slug: string };
+}
+
+/**
+ * Odds API response structure:
+ * bookmakers: { "DraftKings": [ { name: "Spread", odds: [ { hdp: -1.5, home: "1.89", away: "1.93" }, ... ] }, ... ] }
+ * The first spread entry (smallest absolute hdp) is the primary line.
+ */
+
+/**
+ * Fetch NBA spreads from Odds-API.io.
+ * Returns a map of "HOME_FULL_NAME vs AWAY_FULL_NAME" → spread (number, negative = home favored).
+ * Free tier: max 2 bookmakers (DraftKings + FanDuel).
+ */
+async function fetchOddsApiSpreads(): Promise<Map<string, number>> {
+  const spreads = new Map<string, number>();
+  const apiKey = process.env.ODDS_API_KEY;
+  if (!apiKey) {
+    console.log('[Odds API] No ODDS_API_KEY set, skipping');
+    return spreads;
+  }
+
+  try {
+    // Step 1: Get today's NBA events
+    // Filter by date range: today to tomorrow (RFC3339)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 2); // 2 days out to catch evening games
+    const fromDate = today.toISOString();
+    const toDate = tomorrow.toISOString();
+    
+    const eventsRes = await fetch(
+      `${ODDS_API_BASE}/events?sport=basketball&league=usa-nba&from=${fromDate}&to=${toDate}&apiKey=${apiKey}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    if (!eventsRes.ok) {
+      console.error('[Odds API] Events fetch failed:', eventsRes.status);
+      return spreads;
+    }
+    const events = (await eventsRes.json()) as OddsApiEvent[];
+    console.log(`[Odds API] Found ${events.length} NBA events today`);
+    if (!events.length) return spreads;
+
+    // Step 2: Fetch odds for events in batches of 10
+    for (let i = 0; i < events.length; i += 10) {
+      const batch = events.slice(i, i + 10);
+      const eventIds = batch.map(e => e.id).join(',');
+      const oddsRes = await fetch(
+        `${ODDS_API_BASE}/odds/multi?eventIds=${eventIds}&bookmakers=DraftKings,FanDuel&apiKey=${apiKey}`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      if (!oddsRes.ok) {
+        console.error('[Odds API] Odds fetch failed:', oddsRes.status);
+        continue;
+      }
+      const oddsData = (await oddsRes.json()) as Array<{
+        id: number;
+        home: string;
+        away: string;
+        bookmakers: Record<string, Array<{ name: string; odds: Array<{ hdp?: number; home?: string; away?: string }> }>>;
+      }>;
+
+      for (const game of oddsData) {
+        // Find spread from DraftKings first, then FanDuel
+        for (const bk of ['DraftKings', 'FanDuel']) {
+          const markets = game.bookmakers?.[bk] || [];
+          const spreadMarket = markets.find(m => m.name === 'Spread');
+          if (spreadMarket?.odds?.length) {
+            // First entry is the primary line
+            const primarySpread = spreadMarket.odds[0]?.hdp;
+            if (primarySpread !== undefined) {
+              spreads.set(`${game.home} vs ${game.away}`, primarySpread);
+              console.log(`[Odds API] ${game.home} vs ${game.away}: spread ${primarySpread} (${bk})`);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[Odds API] Got spreads for ${spreads.size}/${events.length} games`);
+  } catch (err) {
+    console.error('[Odds API] Error:', err instanceof Error ? err.message : err);
+  }
+
+  return spreads;
+}
+
+// NBA team name → abbreviation mapping for matching Odds API names to ESPN abbreviations
+const TEAM_ABBREV: Record<string, string> = {
+  'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
+  'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+  'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+  'Golden State Warriors': 'GS', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+  'LA Clippers': 'LAC', 'Los Angeles Clippers': 'LAC', 'Los Angeles Lakers': 'LAL',
+  'LA Lakers': 'LAL', 'Memphis Grizzlies': 'MEM', 'Miami Heat': 'MIA',
+  'Milwaukee Bucks': 'MIL', 'Minnesota Timberwolves': 'MIN',
+  'New Orleans Pelicans': 'NO', 'New York Knicks': 'NY', 'Oklahoma City Thunder': 'OKC',
+  'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI', 'Phoenix Suns': 'PHX',
+  'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC',
+  'San Antonio Spurs': 'SA', 'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTAH',
+  'Washington Wizards': 'WSH',
+};
+
+function teamNameToAbbrev(name: string): string {
+  return TEAM_ABBREV[name] || name;
+}
+
 // ─── Today's Games ───────────────────────────────────────────────────────────
 
 /**
- * Get today's NBA schedule.
- * Primary: nba_api live scoreboard
- * Fallback: ESPN scoreboard (has odds/spreads when available)
+ * Get today's NBA schedule with spreads.
+ * Sources: nba_api (games) + ESPN (fallback) + Odds-API.io (spreads)
  */
 export async function getTodaysGames(): Promise<TodaysGame[]> {
   // Try nba_api first for game list
   const pyGames = callPythonStats(['today-games']) as TodaysGame[] | null;
   
-  // Always also fetch ESPN for odds/spreads (nba_api doesn't have them)
+  // Also fetch ESPN for fallback game data
   const data = await espnFetch(
     '/site/v2/sports/basketball/nba/scoreboard'
   ) as { events?: Array<Record<string, unknown>> };
@@ -310,8 +428,13 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
     };
   });
 
-  // If nba_api returned games, merge ESPN spread data into them
+  // Fetch spreads from Odds API (most reliable source)
+  const oddsApiSpreads = await fetchOddsApiSpreads();
+
+  // Determine base game list
+  let games: TodaysGame[];
   if (pyGames && pyGames.length > 0) {
+    // Merge ESPN spreads into nba_api games
     for (const game of pyGames) {
       const espnMatch = espnGames.find(
         (eg: TodaysGame) => eg.homeTeam === game.homeTeam || eg.awayTeam === game.awayTeam
@@ -320,10 +443,36 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
         game.spread = espnMatch.spread;
       }
     }
-    return pyGames;
+    games = pyGames;
+  } else {
+    games = espnGames;
   }
 
-  return espnGames;
+  // Overlay Odds API spreads (higher priority — DraftKings/FanDuel consensus)
+  if (oddsApiSpreads.size > 0) {
+    for (const game of games) {
+      for (const [matchup, spread] of oddsApiSpreads) {
+        const parts = matchup.split(' vs ');
+        const homeAbbr = teamNameToAbbrev(parts[0]?.trim());
+        const awayAbbr = teamNameToAbbrev(parts[1]?.trim());
+        if (
+          (game.homeTeam === homeAbbr && game.awayTeam === awayAbbr) ||
+          (game.homeTeam === awayAbbr && game.awayTeam === homeAbbr)
+        ) {
+          // If the match is reversed (our away = odds home), flip the spread sign
+          if (game.homeTeam === awayAbbr) {
+            game.spread = -spread;
+          } else {
+            game.spread = spread;
+          }
+          console.log(`[Odds API] Matched ${game.awayTeam} @ ${game.homeTeam} → spread: ${game.spread}`);
+          break;
+        }
+      }
+    }
+  }
+
+  return games;
 }
 
 // ─── Team Defense Rankings ───────────────────────────────────────────────────
