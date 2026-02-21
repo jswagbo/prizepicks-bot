@@ -83,23 +83,48 @@ async function espnFetch(path: string): Promise<unknown> {
 // ─── Player Search ───────────────────────────────────────────────────────────
 
 /**
- * Search for an NBA player by name, returns ESPN athlete ID
+ * Search for an NBA player by name, returns ESPN athlete ID.
+ * Uses the site.web.api search endpoint (the old common/v3/athletes?search= returns 400).
  */
 export async function searchPlayer(name: string): Promise<PlayerSearchResult | null> {
-  const data = await espnFetch(
-    `/common/v3/sports/basketball/nba/athletes?search=${encodeURIComponent(name)}`
-  ) as { items?: Array<{ id: string; displayName: string; position?: { abbreviation: string }; team?: { shortDisplayName: string } }> };
+  // Primary: site.web.api search (reliable as of Feb 2026)
+  const searchUrl = `https://site.web.api.espn.com/apis/common/v3/search?query=${encodeURIComponent(name)}&type=player&sport=basketball&league=nba&limit=3`;
+  const res = await fetch(searchUrl, { headers: { 'Accept': 'application/json' } });
+  
+  if (res.ok) {
+    const data = await res.json() as { items?: Array<{ id: string; displayName: string; teamRelationships?: Array<{ core: { abbreviation: string } }>; jersey?: string }> };
+    const items = data.items || [];
+    if (items.length > 0) {
+      const athlete = items[0];
+      const team = athlete.teamRelationships?.[0]?.core?.abbreviation || '';
+      return {
+        id: athlete.id,
+        name: athlete.displayName,
+        team,
+        position: '', // search endpoint doesn't return position directly
+      };
+    }
+  }
 
-  const items = data.items || [];
-  if (items.length === 0) return null;
+  // Fallback: old common/v3 endpoint (may return 400)
+  try {
+    const data = await espnFetch(
+      `/common/v3/sports/basketball/nba/athletes?search=${encodeURIComponent(name)}`
+    ) as { items?: Array<{ id: string; displayName: string; position?: { abbreviation: string }; team?: { shortDisplayName: string } }> };
 
-  const athlete = items[0];
-  return {
-    id: athlete.id,
-    name: athlete.displayName,
-    team: athlete.team?.shortDisplayName || '',
-    position: athlete.position?.abbreviation || '',
-  };
+    const items = data.items || [];
+    if (items.length === 0) return null;
+
+    const athlete = items[0];
+    return {
+      id: athlete.id,
+      name: athlete.displayName,
+      team: athlete.team?.shortDisplayName || '',
+      position: athlete.position?.abbreviation || '',
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Game Log ────────────────────────────────────────────────────────────────
@@ -119,27 +144,39 @@ export async function getGameLog(
 
   const entries: GameLogEntry[] = [];
 
-  // ESPN gamelog structure: categories[] with labels and events
-  const categories = (data as any)?.categories || [];
+  // ESPN gamelog structure (as of Feb 2026):
+  // - Top-level `labels` array: ['MIN', 'FG', 'FG%', '3PT', '3P%', 'FT', 'FT%', 'REB', 'AST', 'BLK', 'STL', 'PF', 'TO', 'PTS']
+  // - Top-level `events` dict: { [eventId]: { gameDate, opponent: { abbreviation }, homeAway } }
+  // - `seasonTypes[].categories[].events[]`: { eventId, stats: string[] }
+  const topLabels: string[] = (data as any)?.labels || [];
+  const topEvents: Record<string, any> = (data as any)?.events || {};
   const seasonTypes = (data as any)?.seasonTypes || [];
   
-  // Try to parse from seasonTypes structure (more common)
   for (const st of seasonTypes) {
     const cats = st?.categories || [];
     for (const cat of cats) {
-      const events = cat?.events || [];
-      const labels: string[] = cat?.labels || [];
+      const catEvents = cat?.events || [];
+      // Use category-level labels if available, otherwise fall back to top-level
+      const labels: string[] = (cat?.labels?.length > 0 ? cat.labels : topLabels);
       
-      for (const event of events) {
-        const stats: number[] = event?.stats || [];
-        const gameDate = event?.gameDate || '';
-        const opponent = event?.opponent?.abbreviation || '';
-        const homeAway = event?.homeAway === 'home' ? 'home' as const : 'away' as const;
+      for (const event of catEvents) {
+        const statsRaw: string[] = event?.stats || [];
+        const eventId = String(event?.eventId || '');
+        
+        // Get event metadata from top-level events dict
+        const eventMeta = topEvents[eventId] || {};
+        const gameDate = event?.gameDate || eventMeta?.gameDate || '';
+        const opponent = event?.opponent?.abbreviation || eventMeta?.opponent?.abbreviation || '';
+        const homeAwayRaw = event?.homeAway || eventMeta?.homeAway || '';
+        const homeAway = homeAwayRaw === 'home' ? 'home' as const : 'away' as const;
 
         // Map labels to stat values
         const statMap: Record<string, number> = {};
         labels.forEach((label: string, i: number) => {
-          statMap[label.toUpperCase()] = stats[i] || 0;
+          const raw = statsRaw[i] || '0';
+          // Handle compound stats like '9-14' (made-attempted) — take the first number (made)
+          const val = raw.includes('-') ? parseFloat(raw.split('-')[0]) || 0 : parseFloat(raw) || 0;
+          statMap[label.toUpperCase()] = val;
         });
 
         const entry: GameLogEntry = {
