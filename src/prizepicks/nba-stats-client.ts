@@ -6,6 +6,28 @@
  */
 
 import { getDatabase } from '../core/db/database';
+import { execSync } from 'child_process';
+import path from 'path';
+
+// Path to Python venv and stats script
+const VENV_PYTHON = path.resolve(__dirname, '../../.venv/bin/python3');
+const STATS_SCRIPT = path.resolve(__dirname, '../../scripts/nba-stats.py');
+
+/**
+ * Call the Python nba_api bridge script and return parsed JSON.
+ */
+function callPythonStats(args: string[]): unknown | null {
+  try {
+    const result = execSync(
+      `${VENV_PYTHON} ${STATS_SCRIPT} ${args.map(a => JSON.stringify(a)).join(' ')}`,
+      { timeout: 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+    );
+    return JSON.parse(result.trim());
+  } catch (err) {
+    console.error('[NBA Stats] Python bridge error:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,60 +105,58 @@ async function espnFetch(path: string): Promise<unknown> {
 // ─── Player Search ───────────────────────────────────────────────────────────
 
 /**
- * Search for an NBA player by name, returns ESPN athlete ID.
- * Uses the site.web.api search endpoint (the old common/v3/athletes?search= returns 400).
+ * Search for an NBA player by name, returns athlete ID.
+ * Primary: nba_api (Python) — most reliable, pulls from NBA.com
+ * Fallback: ESPN site.web.api search
  */
 export async function searchPlayer(name: string): Promise<PlayerSearchResult | null> {
-  // Primary: site.web.api search (reliable as of Feb 2026)
-  const searchUrl = `https://site.web.api.espn.com/apis/common/v3/search?query=${encodeURIComponent(name)}&type=player&sport=basketball&league=nba&limit=3`;
-  const res = await fetch(searchUrl, { headers: { 'Accept': 'application/json' } });
-  
-  if (res.ok) {
-    const data = await res.json() as { items?: Array<{ id: string; displayName: string; teamRelationships?: Array<{ core: { abbreviation: string } }>; jersey?: string }> };
-    const items = data.items || [];
-    if (items.length > 0) {
-      const athlete = items[0];
-      const team = athlete.teamRelationships?.[0]?.core?.abbreviation || '';
-      return {
-        id: athlete.id,
-        name: athlete.displayName,
-        team,
-        position: '', // search endpoint doesn't return position directly
-      };
-    }
+  // Primary: nba_api via Python bridge
+  const pyResult = callPythonStats(['player-search', name]) as PlayerSearchResult | null;
+  if (pyResult?.id) {
+    return pyResult;
   }
 
-  // Fallback: old common/v3 endpoint (may return 400)
+  // Fallback: ESPN site.web.api search
   try {
-    const data = await espnFetch(
-      `/common/v3/sports/basketball/nba/athletes?search=${encodeURIComponent(name)}`
-    ) as { items?: Array<{ id: string; displayName: string; position?: { abbreviation: string }; team?: { shortDisplayName: string } }> };
+    const searchUrl = `https://site.web.api.espn.com/apis/common/v3/search?query=${encodeURIComponent(name)}&type=player&sport=basketball&league=nba&limit=3`;
+    const res = await fetch(searchUrl, { headers: { 'Accept': 'application/json' } });
+    
+    if (res.ok) {
+      const data = await res.json() as { items?: Array<{ id: string; displayName: string; teamRelationships?: Array<{ core: { abbreviation: string } }> }> };
+      const items = data.items || [];
+      if (items.length > 0) {
+        const athlete = items[0];
+        const team = athlete.teamRelationships?.[0]?.core?.abbreviation || '';
+        return { id: athlete.id, name: athlete.displayName, team, position: '' };
+      }
+    }
+  } catch {}
 
-    const items = data.items || [];
-    if (items.length === 0) return null;
-
-    const athlete = items[0];
-    return {
-      id: athlete.id,
-      name: athlete.displayName,
-      team: athlete.team?.shortDisplayName || '',
-      position: athlete.position?.abbreviation || '',
-    };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 // ─── Game Log ────────────────────────────────────────────────────────────────
 
 /**
- * Fetch a player's game log from ESPN and cache to SQLite
+ * Fetch a player's game log and cache to SQLite.
+ * Primary: nba_api (Python) — reliable NBA.com data
+ * Fallback: ESPN gamelog API
  */
 export async function getGameLog(
   playerId: string,
   playerName: string,
   season?: string
 ): Promise<GameLogEntry[]> {
+  // Try nba_api first
+  const pyArgs = ['game-log', playerName];
+  if (season) { pyArgs.push('--season', season); }
+  const pyResult = callPythonStats(pyArgs) as GameLogEntry[] | null;
+  if (pyResult && pyResult.length > 0) {
+    cacheGameLogs(playerName, 'NBA', pyResult);
+    return pyResult;
+  }
+
+  // Fallback to ESPN
   const seasonParam = season ? `?season=${season}` : '';
   const data = await espnFetch(
     `/common/v3/sports/basketball/nba/athletes/${playerId}/gamelog${seasonParam}`
@@ -249,14 +269,20 @@ function cacheGameLogs(playerName: string, league: string, entries: GameLogEntry
 // ─── Today's Games ───────────────────────────────────────────────────────────
 
 /**
- * Get today's NBA schedule
+ * Get today's NBA schedule.
+ * Primary: nba_api live scoreboard
+ * Fallback: ESPN scoreboard (has odds/spreads when available)
  */
 export async function getTodaysGames(): Promise<TodaysGame[]> {
+  // Try nba_api first for game list
+  const pyGames = callPythonStats(['today-games']) as TodaysGame[] | null;
+  
+  // Always also fetch ESPN for odds/spreads (nba_api doesn't have them)
   const data = await espnFetch(
     '/site/v2/sports/basketball/nba/scoreboard'
   ) as { events?: Array<Record<string, unknown>> };
 
-  return (data.events || []).map((event: any) => {
+  const espnGames = (data.events || []).map((event: any) => {
     const competition = event.competitions?.[0] || {};
     const competitors = competition.competitors || [];
     const home = competitors.find((c: any) => c.homeAway === 'home') || {};
@@ -268,7 +294,6 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
     if (odds.spread !== undefined && odds.spread !== null) {
       spread = parseFloat(odds.spread);
     } else if (odds.details) {
-      // Parse from details string like "MIN -13.5"
       const match = (odds.details as string).match(/([-+]?\d+\.?\d*)/);
       if (match) spread = parseFloat(match[1]);
     }
@@ -284,6 +309,21 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
       spread,
     };
   });
+
+  // If nba_api returned games, merge ESPN spread data into them
+  if (pyGames && pyGames.length > 0) {
+    for (const game of pyGames) {
+      const espnMatch = espnGames.find(
+        (eg: TodaysGame) => eg.homeTeam === game.homeTeam || eg.awayTeam === game.awayTeam
+      );
+      if (espnMatch?.spread != null) {
+        game.spread = espnMatch.spread;
+      }
+    }
+    return pyGames;
+  }
+
+  return espnGames;
 }
 
 // ─── Team Defense Rankings ───────────────────────────────────────────────────
