@@ -441,20 +441,158 @@ export async function compareLines(
   };
 }
 
+// ─── Covers.com Expert Picks (from individual game articles) ─────────────────
+
+let coversCache: { data: ExpertPick[]; timestamp: number } | null = null;
+const COVERS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+const COVERS_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+  'Accept': 'text/html',
+};
+
+function decodeHtmlEntities(html: string): string {
+  return html
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&rsquo;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x2019;/g, "'");
+}
+
+/**
+ * Extract player prop picks from a Covers.com article HTML.
+ * Uses two regex patterns to catch both short (o/u) and long (Over/Under) formats.
+ */
+function extractPicksFromArticle(html: string): ExpertPick[] {
+  html = decodeHtmlEntities(html);
+  // Dedupe by player+stat+direction
+  const seen = new Set<string>();
+  const picks: ExpertPick[] = [];
+
+  const addPick = (name: string, direction: 'OVER' | 'UNDER', line: number, rawStat: string) => {
+    if (name.length < 4 || name.length > 40 || /^[a-z]/.test(name) || isNaN(line)) return;
+    // Skip single-word names (last name only like "Brooks") — we'll get the full name from another match
+    if (!name.includes(' ')) return;
+    const statType = mapCoversStat(rawStat);
+    if (!statType) return;
+    const key = `${name.toLowerCase()}|${statType}|${direction}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    picks.push({ source: 'Covers Expert', playerName: name, statType, pick: direction, line });
+  };
+
+  // Short format: "Name o22.5 Points Scored (-120)"
+  const shortRe = /(?:>|\s)([\w][\w '.'-]{2,35}?)\s+(o|u)([\d.]+)\s+([\w\s+]+?)\s*\([+-]\d+\)/g;
+  let m;
+  while ((m = shortRe.exec(html)) !== null) {
+    addPick(m[1].trim(), m[2] === 'o' ? 'OVER' : 'UNDER', parseFloat(m[3]), m[4].trim());
+  }
+
+  // Long format: "Name Over/Under 22.5 points"
+  const longRe = /([\w][\w '.'-]{2,35}?)\s+(Over|Under)\s+([\d.]+)\s+(points|rebounds|assists|threes|blocks|steals|turnovers)/gi;
+  while ((m = longRe.exec(html)) !== null) {
+    addPick(m[1].trim(), m[2].toUpperCase() as 'OVER' | 'UNDER', parseFloat(m[3]), m[4].trim());
+  }
+
+  return picks;
+}
+
+/**
+ * Scrape Covers.com: fetch the NBA picks listing for today's article URLs,
+ * then fetch each article and extract player prop picks.
+ */
+async function fetchCoversPicks(): Promise<ExpertPick[]> {
+  if (coversCache && Date.now() - coversCache.timestamp < COVERS_CACHE_TTL) {
+    console.log(`[Covers] Returning cached picks (${coversCache.data.length})`);
+    return coversCache.data;
+  }
+
+  const picks: ExpertPick[] = [];
+
+  try {
+    // Step 1: Get article URLs from listing page
+    const listRes = await fetch('https://www.covers.com/picks/nba', { headers: COVERS_HEADERS });
+    if (!listRes.ok) {
+      console.log(`[Covers] Listing page HTTP ${listRes.status}`);
+      coversCache = { data: [], timestamp: Date.now() };
+      return [];
+    }
+
+    const listHtml = await listRes.text();
+    const articleUrls = new Set<string>();
+    const urlRe = /href="(https:\/\/www\.covers\.com\/nba\/[^"]*prediction[^"]+)"/g;
+    let urlMatch;
+    while ((urlMatch = urlRe.exec(listHtml)) !== null) {
+      articleUrls.add(urlMatch[1]);
+    }
+
+    console.log(`[Covers] Found ${articleUrls.size} game articles`);
+
+    if (articleUrls.size === 0) {
+      // Fallback: extract whatever picks exist on the listing page itself
+      picks.push(...extractPicksFromArticle(listHtml));
+    } else {
+      // Step 2: Fetch articles in parallel (max 6 concurrent)
+      const urls = [...articleUrls];
+      const results = await Promise.allSettled(
+        urls.map(async (url) => {
+          const res = await fetch(url, { headers: COVERS_HEADERS });
+          if (!res.ok) return [];
+          const html = await res.text();
+          return extractPicksFromArticle(html);
+        })
+      );
+
+      // Dedupe across articles
+      const globalSeen = new Set<string>();
+      for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        for (const pick of result.value) {
+          const key = `${pick.playerName.toLowerCase()}|${pick.statType}|${pick.pick}`;
+          if (globalSeen.has(key)) continue;
+          globalSeen.add(key);
+          picks.push(pick);
+        }
+      }
+    }
+
+    console.log(`[Covers] Scraped ${picks.length} prop picks from ${articleUrls.size} articles`);
+  } catch (err) {
+    console.error('[Covers] Error:', err instanceof Error ? err.message : err);
+  }
+
+  coversCache = { data: picks, timestamp: Date.now() };
+  return picks;
+}
+
+/** Map Covers.com stat names to PrizePicks stat names */
+function mapCoversStat(raw: string): string | null {
+  const lower = raw.toLowerCase().trim();
+  if (lower.includes('points')) return 'Points';
+  if (lower.includes('rebound')) return 'Rebounds';
+  if (lower.includes('assist')) return 'Assists';
+  if (lower.includes('3-pointer') || lower.includes('three') || lower.includes('3-pt') || lower === 'threes') return '3-PT Made';
+  if (lower.includes('steal')) return 'Steals';
+  if (lower.includes('block')) return 'Blocked Shots';
+  if (lower.includes('turnover')) return 'Turnovers';
+  return null; // Unknown stat — skip
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Get expert picks — only returns picks where there's a REAL discrepancy
- * between PP and books AND research doesn't flag it as untrustworthy.
+ * Fetch expert picks from real sources:
+ * 1. Covers.com (expert analysis + computer model picks with star ratings)
  * 
- * Much more selective than before — quality over quantity.
+ * Returns actual expert/model prop picks with reasoning.
  */
 export async function getExpertPicks(): Promise<ExpertPick[]> {
-  // This function exists for backward compatibility with pick-scorer.
-  // The real value is in compareLines() which is used per-projection.
-  // We return an empty array — the scorer should use getConsensusForPick() instead.
-  console.log('[Books] getExpertPicks() deprecated — use compareLines() per projection');
-  return [];
+  const coversPicks = await fetchCoversPicks().catch(() => [] as ExpertPick[]);
+  
+  console.log(`[Expert Picks] Total: ${coversPicks.length} picks (Covers: ${coversPicks.length})`);
+  return coversPicks;
 }
 
 /**
@@ -498,13 +636,15 @@ export async function getConsensusForPick(
     lineComparison = await compareLines(playerName, statType, ppLine, bookLines) || undefined;
   }
 
-  return {
-    playerName,
-    statType,
-    overPercent,
-    underPercent,
-    sharpMoney,
-    expertPicks: matching.map(bl => ({
+  // Also include Covers expert picks for this player/stat
+  const coversPicks = await fetchCoversPicks().catch(() => [] as ExpertPick[]);
+  const coversMatching = coversPicks.filter(cp =>
+    namesMatch(cp.playerName, playerName) &&
+    cp.statType === statType
+  );
+
+  const allExpertPicks: ExpertPick[] = [
+    ...matching.map(bl => ({
       source: bl.book,
       playerName: bl.playerName,
       statType,
@@ -512,6 +652,16 @@ export async function getConsensusForPick(
       line: bl.line,
       reasoning: `${bl.book}: line ${bl.line} (o${bl.overPrice.toFixed(2)} u${bl.underPrice.toFixed(2)})`,
     })),
+    ...coversMatching,
+  ];
+
+  return {
+    playerName,
+    statType,
+    overPercent,
+    underPercent,
+    sharpMoney,
+    expertPicks: allExpertPicks,
     lineComparison,
   };
 }
