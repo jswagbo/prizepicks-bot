@@ -43,64 +43,72 @@ export function getDatabase(config?: DatabaseConfig): Database.Database {
   // Enable WAL mode for better concurrency
   db.pragma('journal_mode = WAL');
 
+  // Auto-run migrations on first connection
+  ensureMigrations(db);
+
   return db;
 }
 
+let migrationsRun = false;
+
 /**
- * Initialize database schema if not exists
+ * Ensure all migrations have been applied.
+ * Runs automatically on first getDatabase() call.
  */
-export function initializeDatabase(config?: DatabaseConfig): void {
-  const database = getDatabase(config);
-  
-  // Check if schema is already initialized
+function ensureMigrations(database: Database.Database): void {
+  if (migrationsRun) return;
+  migrationsRun = true;
+
+  // Check if schema_version table exists
   const tableCheck = database.prepare(`
-    SELECT name FROM sqlite_master 
-    WHERE type='table' AND name='schema_version'
+    SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'
   `).get();
 
   if (!tableCheck) {
+    // Fresh DB — create everything
     console.log('Initializing database schema...');
     database.exec(getSchemaSQL());
-    
-    // Record schema version
-    database.prepare(`
-      INSERT INTO schema_version (version) VALUES (?)
-    `).run(SCHEMA_VERSION);
-    
-    // Initialize treasury with default state
+    database.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
     database.prepare(`
       INSERT OR IGNORE INTO treasury (id, total_capital, available_capital, allocated_capital, reserve_minimum)
       VALUES ('main', 0, 0, 0, 100)
     `).run();
-    
     console.log(`Database initialized with schema version ${SCHEMA_VERSION}`);
-  } else {
-    // Check schema version
-    const version = database.prepare(`
-      SELECT MAX(version) as version FROM schema_version
-    `).get() as { version: number } | undefined;
-    
-    if (version && version.version < SCHEMA_VERSION) {
-      console.log(`Database schema version ${version.version} is outdated. Current: ${SCHEMA_VERSION}. Running migrations...`);
-      
-      // Migration: Add shooting stat columns to player_game_logs
-      const newCols = [
-        'three_pointers_attempted REAL',
-        'field_goals_made REAL',
-        'field_goals_attempted REAL',
-        'free_throws_made REAL',
-        'free_throws_attempted REAL',
-      ];
-      for (const col of newCols) {
-        try {
-          database.exec(`ALTER TABLE player_game_logs ADD COLUMN ${col}`);
-        } catch (_) { /* column already exists */ }
-      }
-      
-      database.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
-      console.log(`Migrated to schema version ${SCHEMA_VERSION}`);
-    }
+    return;
   }
+
+  // Existing DB — check version and run migrations
+  const version = database.prepare(`SELECT MAX(version) as version FROM schema_version`).get() as { version: number } | undefined;
+  const currentVersion = version?.version || 0;
+
+  if (currentVersion < SCHEMA_VERSION) {
+    console.log(`Database schema version ${currentVersion} → ${SCHEMA_VERSION}. Running migrations...`);
+
+    // v5 → v6: Add shooting stat columns
+    if (currentVersion < 6) {
+      const cols = [
+        'three_pointers_attempted REAL DEFAULT 0',
+        'field_goals_made REAL DEFAULT 0',
+        'field_goals_attempted REAL DEFAULT 0',
+        'free_throws_made REAL DEFAULT 0',
+        'free_throws_attempted REAL DEFAULT 0',
+      ];
+      for (const col of cols) {
+        try { database.exec(`ALTER TABLE player_game_logs ADD COLUMN ${col}`); } catch (_) { /* already exists */ }
+      }
+    }
+
+    database.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
+    console.log(`Migrated to schema version ${SCHEMA_VERSION}`);
+  }
+}
+
+/**
+ * Initialize database schema if not exists.
+ * @deprecated Migrations now run automatically via getDatabase(). Kept for backward compatibility.
+ */
+export function initializeDatabase(config?: DatabaseConfig): void {
+  getDatabase(config); // triggers ensureMigrations
 }
 
 /**
