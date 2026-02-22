@@ -2,17 +2,21 @@ import { getProjections, getTodaysGames, analyzeMatchup, scoreProjection } from 
 import { getInjuryReport, getTeamInjuryImpact } from './src/prizepicks/injury-news-client';
 import { getExpertPicks, getConsensusForPick } from './src/prizepicks/expert-picks-client';
 import { rankProjections, buildParlay, type ScoredPick } from './src/prizepicks/pick-scorer';
+import { getTeamDefenseRankings } from './src/prizepicks/nba-stats-client';
 import { writeFileSync } from 'fs';
 
 async function main() {
   console.log('=== STEP 1: Fetch Data ===');
   
-  const [games, projections, injuries, expertPicks] = await Promise.all([
+  const [games, projections, injuries, expertPicks, defenseRankings] = await Promise.all([
     getTodaysGames(),
     getProjections('NBA'),
     getInjuryReport().catch(e => { console.error('Injury fetch failed:', e.message); return []; }),
     getExpertPicks().catch(e => { console.error('Expert picks failed:', e.message); return []; }),
+    getTeamDefenseRankings().catch(e => { console.error('Defense rankings fetch failed:', e.message); return []; }),
   ]);
+
+  console.log(`Defense rankings: ${defenseRankings.length} entries`);
 
   console.log(`Games: ${games.length}`);
   console.log(`Projections: ${projections.length}`);
