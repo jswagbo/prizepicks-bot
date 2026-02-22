@@ -66,6 +66,11 @@ def get_game_log(player_name: str, season: str = "2025-26") -> list[dict]:
             "blocks": int(row.get("BLK", 0)),
             "turnovers": int(row.get("TOV", 0)),
             "threePointersMade": int(row.get("FG3M", 0)),
+            "threePointersAttempted": int(row.get("FG3A", 0)),
+            "fieldGoalsMade": int(row.get("FGM", 0)),
+            "fieldGoalsAttempted": int(row.get("FGA", 0)),
+            "freeThrowsMade": int(row.get("FTM", 0)),
+            "freeThrowsAttempted": int(row.get("FTA", 0)),
             "fantasyScore": 0,
             "ptsRebsAsts": 0,
         }

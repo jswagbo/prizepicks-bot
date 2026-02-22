@@ -84,6 +84,29 @@ function getStatValue(row: Record<string, unknown>, statType: string): number {
     return ((row.rebounds as number) || 0) * 0.25;
   }
   
+  // Shooting attempt stats
+  if (lower.includes('two pointers attempted') || lower === '2pa') {
+    return ((row.field_goals_attempted as number) || 0) - ((row.three_pointers_attempted as number) || 0);
+  }
+  if (lower.includes('two pointers made') || lower === '2pm') {
+    return ((row.field_goals_made as number) || 0) - ((row.three_pointers_made as number) || 0);
+  }
+  if (lower.includes('field goals attempted') || lower === 'fga') {
+    return (row.field_goals_attempted as number) || 0;
+  }
+  if (lower.includes('field goals made') || lower === 'fgm') {
+    return (row.field_goals_made as number) || 0;
+  }
+  if (lower.includes('3-pt attempted') || lower.includes('three pointers attempted') || lower === '3pa') {
+    return (row.three_pointers_attempted as number) || 0;
+  }
+  if (lower.includes('free throws attempted') || lower === 'fta') {
+    return (row.free_throws_attempted as number) || 0;
+  }
+  if (lower.includes('free throws made') || lower === 'ftm') {
+    return (row.free_throws_made as number) || 0;
+  }
+  
   const col = statTypeToColumn(statType);
   return (row[col] as number) || 0;
 }

@@ -50,6 +50,11 @@ export interface GameLogEntry {
   blocks: number;
   turnovers: number;
   threePointersMade: number;
+  threePointersAttempted: number;
+  fieldGoalsMade: number;
+  fieldGoalsAttempted: number;
+  freeThrowsMade: number;
+  freeThrowsAttempted: number;
   fantasyScore: number;
   ptsRebsAsts: number;
   statJson: Record<string, unknown>;
@@ -190,13 +195,18 @@ export async function getGameLog(
         const homeAwayRaw = event?.homeAway || eventMeta?.homeAway || '';
         const homeAway = homeAwayRaw === 'home' ? 'home' as const : 'away' as const;
 
-        // Map labels to stat values
+        // Map labels to stat values (both made and attempted for compound stats)
         const statMap: Record<string, number> = {};
         labels.forEach((label: string, i: number) => {
           const raw = statsRaw[i] || '0';
-          // Handle compound stats like '9-14' (made-attempted) — take the first number (made)
-          const val = raw.includes('-') ? parseFloat(raw.split('-')[0]) || 0 : parseFloat(raw) || 0;
-          statMap[label.toUpperCase()] = val;
+          if (raw.includes('-')) {
+            // Compound stat like '9-14' (made-attempted)
+            const parts = raw.split('-');
+            statMap[label.toUpperCase()] = parseFloat(parts[0]) || 0;
+            statMap[label.toUpperCase() + '_ATT'] = parseFloat(parts[1]) || 0;
+          } else {
+            statMap[label.toUpperCase()] = parseFloat(raw) || 0;
+          }
         });
 
         const entry: GameLogEntry = {
@@ -211,6 +221,11 @@ export async function getGameLog(
           blocks: statMap['BLK'] || 0,
           turnovers: statMap['TO'] || statMap['TOV'] || 0,
           threePointersMade: statMap['3PM'] || statMap['3PT'] || 0,
+          threePointersAttempted: statMap['3PM_ATT'] || statMap['3PT_ATT'] || 0,
+          fieldGoalsMade: statMap['FG'] || 0,
+          fieldGoalsAttempted: statMap['FG_ATT'] || 0,
+          freeThrowsMade: statMap['FT'] || 0,
+          freeThrowsAttempted: statMap['FT_ATT'] || 0,
           fantasyScore: 0,
           ptsRebsAsts: 0,
           statJson: statMap,
@@ -248,8 +263,11 @@ function cacheGameLogs(playerName: string, league: string, entries: GameLogEntry
     INSERT OR REPLACE INTO player_game_logs 
     (player_name, league, game_date, opponent, home_away, minutes,
      points, rebounds, assists, steals, blocks, turnovers,
-     three_pointers_made, fantasy_score, pts_rebs_asts, stat_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     three_pointers_made, three_pointers_attempted,
+     field_goals_made, field_goals_attempted,
+     free_throws_made, free_throws_attempted,
+     fantasy_score, pts_rebs_asts, stat_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertMany = db.transaction((rows: GameLogEntry[]) => {
@@ -257,7 +275,10 @@ function cacheGameLogs(playerName: string, league: string, entries: GameLogEntry
       stmt.run(
         playerName, league, e.gameDate, e.opponent, e.homeAway, e.minutes,
         e.points, e.rebounds, e.assists, e.steals, e.blocks, e.turnovers,
-        e.threePointersMade, e.fantasyScore, e.ptsRebsAsts,
+        e.threePointersMade, e.threePointersAttempted,
+        e.fieldGoalsMade, e.fieldGoalsAttempted,
+        e.freeThrowsMade, e.freeThrowsAttempted,
+        e.fantasyScore, e.ptsRebsAsts,
         JSON.stringify(e.statJson)
       );
     }

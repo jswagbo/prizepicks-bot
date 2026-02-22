@@ -81,8 +81,24 @@ export function initializeDatabase(config?: DatabaseConfig): void {
     `).get() as { version: number } | undefined;
     
     if (version && version.version < SCHEMA_VERSION) {
-      console.log(`Database schema version ${version.version} is outdated. Current: ${SCHEMA_VERSION}`);
-      // Future: Run migrations here
+      console.log(`Database schema version ${version.version} is outdated. Current: ${SCHEMA_VERSION}. Running migrations...`);
+      
+      // Migration: Add shooting stat columns to player_game_logs
+      const newCols = [
+        'three_pointers_attempted REAL',
+        'field_goals_made REAL',
+        'field_goals_attempted REAL',
+        'free_throws_made REAL',
+        'free_throws_attempted REAL',
+      ];
+      for (const col of newCols) {
+        try {
+          database.exec(`ALTER TABLE player_game_logs ADD COLUMN ${col}`);
+        } catch (_) { /* column already exists */ }
+      }
+      
+      database.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
+      console.log(`Migrated to schema version ${SCHEMA_VERSION}`);
     }
   }
 }

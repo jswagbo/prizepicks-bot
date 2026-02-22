@@ -5,7 +5,7 @@
  * Run migrations via: npm run db:migrate
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const CREATE_TABLES_SQL = `
 -- =============================================================================
@@ -513,6 +513,11 @@ CREATE TABLE IF NOT EXISTS player_game_logs (
   blocks REAL,
   turnovers REAL,
   three_pointers_made REAL,
+  three_pointers_attempted REAL,
+  field_goals_made REAL,
+  field_goals_attempted REAL,
+  free_throws_made REAL,
+  free_throws_attempted REAL,
   fantasy_score REAL,
   pts_rebs_asts REAL,
   stat_json TEXT,
