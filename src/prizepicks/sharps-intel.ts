@@ -4,7 +4,7 @@
  * Aggregates signals from multiple sources:
  * 1. Pinnacle line comparison (sharpest book via The Odds API)
  * 2. Expert capper picks from Covers, OddsShark, Action Network articles
- * 3. Twitter/X sharp cappers (via web search — scrapes their posted picks)
+ * 3. Web search article scraper (Yahoo Sports, SI, WSN, Dimers, etc.)
  * 4. Line movement detection (tracks in SQLite)
  */
 
@@ -170,6 +170,11 @@ function extractPicksFromHtml(html: string, source: string): ExpertPick[] {
   const addPick = (name: string, direction: 'OVER' | 'UNDER', line: number, rawStat: string) => {
     if (name.length < 4 || name.length > 40 || /^[a-z]/.test(name) || isNaN(line)) return;
     if (!name.includes(' ')) return;
+    // Filter out sentence fragments and non-name text
+    if (/\b(take|has|had|get|will|can|should|the|this|that|with|from|been|also|just|nba|prop|bet|pick|best|today)\b/i.test(name)) return;
+    // Must look like "FirstName LastName" (both start uppercase)
+    const nameParts = name.trim().split(/\s+/);
+    if (nameParts.length < 2 || nameParts.some(p => p.length > 0 && /^[a-z]/.test(p) && p !== 'de' && p !== 'van' && p !== 'von')) return;
     const statType = mapStatName(rawStat);
     if (!statType) return;
     const key = `${name.toLowerCase()}|${statType}|${direction}`;
@@ -298,101 +303,151 @@ async function fetchActionNetworkPicks(): Promise<ExpertPick[]> {
   }
 }
 
-// ─── Twitter/X Sharp Cappers (via web search) ────────────────────────────────
+// ─── Web Search Article Scraper (replaces Twitter/Nitter) ────────────────────
 
 /**
- * Known sharp cappers on Twitter/X who post NBA player prop picks.
- * We search for their recent tweets via web search (no API needed).
+ * Search the web for today's NBA player prop pick articles and extract picks.
+ * More resilient than hardcoded site scrapers — catches fresh content daily
+ * from Yahoo Sports, SI, WSN, Dimers, Props.com, etc.
  */
-const SHARP_CAPPERS = [
-  'PropsGawd',
-  'PropStarz',
-  'NBAPickOfTheDay',
-  'LightningLockz',
-  'propsdotcash',
-  'UnderTheBoardNBA',
-  'PropBetGuy',
+
+let articleCache: { data: ExpertPick[]; timestamp: number } | null = null;
+const ARTICLE_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
+
+/**
+ * Known sites that publish daily NBA player prop picks with scrape-friendly HTML.
+ * Each entry has a listing URL (to find today's article) and a source name.
+ */
+const ARTICLE_SOURCES = [
+  {
+    name: 'Yahoo Sports',
+    // Yahoo syndicates Covers articles — search their NBA section for today's props
+    listUrl: 'https://sports.yahoo.com/nba/',
+    articlePattern: /href="(\/articles\/[^"]*(?:prop|pick|best)[^"]*\.html)"/gi,
+    baseUrl: 'https://sports.yahoo.com',
+  },
+  {
+    name: 'SI Betting',
+    listUrl: 'https://www.si.com/betting/nba-picks',
+    articlePattern: /href="(\/betting\/[^"]*(?:prop|best-bet|player)[^"]*)"/gi,
+    baseUrl: 'https://www.si.com',
+  },
+  {
+    name: 'WSN',
+    // WSN uses date-based URLs for daily props
+    listUrl: null, // Direct URL constructed below
+    directUrl: () => {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `https://www.wsn.com/nba/best-prop-bets-today-${yyyy}-${mm}-${dd}/`;
+    },
+  },
+  {
+    name: 'Sporting News',
+    listUrl: 'https://www.sportingnews.com/us/nba/news',
+    articlePattern: /href="(\/us\/nba\/news\/[^"]*(?:prop|pick|best-bet)[^"]*)"/gi,
+    baseUrl: 'https://www.sportingnews.com',
+  },
 ];
 
-let twitterCache: { data: ExpertPick[]; timestamp: number } | null = null;
-const TWITTER_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
-
-async function fetchTwitterSharpPicks(): Promise<ExpertPick[]> {
-  if (twitterCache && Date.now() - twitterCache.timestamp < TWITTER_CACHE_TTL) {
-    return twitterCache.data;
+async function fetchArticlePicks(): Promise<ExpertPick[]> {
+  if (articleCache && Date.now() - articleCache.timestamp < ARTICLE_CACHE_TTL) {
+    return articleCache.data;
   }
 
   const picks: ExpertPick[] = [];
+  const globalSeen = new Set<string>();
 
-  try {
-    console.log('[Sharps] Searching for Twitter capper picks...');
-
-    // Search for recent NBA prop picks from known cappers
-    const searchQueries = [
-      'NBA player props picks today OVER UNDER site:x.com',
-      'NBA prop bet today "OVER" OR "UNDER" points rebounds assists site:x.com',
-    ];
-
-    for (const query of searchQueries) {
-      try {
-        const res = await fetch(
-          `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
-          { headers: EXPERT_HEADERS }
-        );
-        if (!res.ok) continue;
-
-        const html = await res.text();
-        // Extract any prop picks mentioned in search result snippets
-        const snippetPicks = extractPicksFromHtml(html, 'Twitter Sharp');
-        picks.push(...snippetPicks);
-
-        await new Promise(r => setTimeout(r, 500));
-      } catch {
-        // Search failed, non-fatal
+  const addPicks = (newPicks: ExpertPick[]) => {
+    for (const pick of newPicks) {
+      const key = `${pick.playerName.toLowerCase()}|${pick.statType}|${pick.pick}`;
+      if (!globalSeen.has(key)) {
+        globalSeen.add(key);
+        picks.push(pick);
       }
     }
+  };
 
-    // Also check Nitter mirrors for specific cappers (more reliable than X directly)
-    for (const capper of SHARP_CAPPERS.slice(0, 3)) {
-      try {
-        // Try nitter.net or similar public mirrors
-        const mirrors = [
-          `https://nitter.privacydev.net/${capper}`,
-          `https://nitter.poast.org/${capper}`,
-        ];
+  console.log('[Sharps] Fetching article-based prop picks...');
 
-        for (const url of mirrors) {
-          try {
-            const res = await fetch(url, {
-              headers: EXPERT_HEADERS,
-              signal: AbortSignal.timeout(5000),
-            });
-            if (!res.ok) continue;
-
-            const html = await res.text();
-            const capperPicks = extractPicksFromHtml(html, `@${capper}`);
-            if (capperPicks.length > 0) {
-              picks.push(...capperPicks);
-              console.log(`[Sharps] @${capper}: ${capperPicks.length} picks`);
-              break; // Got data from this mirror, move to next capper
-            }
-          } catch {
-            continue; // Try next mirror
-          }
+  const tasks = ARTICLE_SOURCES.map(async (src) => {
+    try {
+      // Direct URL source (like WSN date-based)
+      if ('directUrl' in src && src.directUrl) {
+        const url = src.directUrl();
+        const res = await fetch(url, { headers: EXPERT_HEADERS, signal: AbortSignal.timeout(8000) });
+        if (res.ok) {
+          const html = await res.text();
+          const found = extractPicksFromHtml(html, src.name);
+          console.log(`[Sharps] ${src.name} (direct): ${found.length} picks`);
+          return found;
         }
-
-        await new Promise(r => setTimeout(r, 300));
-      } catch {
-        // Capper fetch failed, non-fatal
+        console.log(`[Sharps] ${src.name} HTTP ${res.status}`);
+        return [];
       }
-    }
 
-    console.log(`[Sharps] Twitter total: ${picks.length} picks`);
-  } catch (err) {
-    console.error('[Sharps] Twitter search error:', err instanceof Error ? err.message : err);
+      // Listing page → find article URLs → fetch articles
+      if (!src.listUrl || !src.articlePattern) return [];
+
+      const listRes = await fetch(src.listUrl, { headers: EXPERT_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!listRes.ok) {
+        console.log(`[Sharps] ${src.name} listing HTTP ${listRes.status}`);
+        return [];
+      }
+
+      const listHtml = await listRes.text();
+
+      // First try extracting directly from listing page
+      const listPicks = extractPicksFromHtml(listHtml, src.name);
+      if (listPicks.length >= 3) {
+        console.log(`[Sharps] ${src.name} (listing): ${listPicks.length} picks`);
+        return listPicks;
+      }
+
+      // Otherwise find article links
+      const urls = new Set<string>();
+      let m;
+      const regex = new RegExp(src.articlePattern.source, src.articlePattern.flags);
+      while ((m = regex.exec(listHtml)) !== null && urls.size < 3) {
+        const fullUrl = m[1].startsWith('http') ? m[1] : `${src.baseUrl || ''}${m[1]}`;
+        urls.add(fullUrl);
+      }
+
+      if (urls.size === 0) {
+        console.log(`[Sharps] ${src.name}: no article URLs found`);
+        return listPicks; // Return whatever we got from the listing
+      }
+
+      const articleResults = await Promise.allSettled(
+        [...urls].map(async (url) => {
+          const res = await fetch(url, { headers: EXPERT_HEADERS, signal: AbortSignal.timeout(8000) });
+          if (!res.ok) return [];
+          const html = await res.text();
+          return extractPicksFromHtml(html, src.name);
+        })
+      );
+
+      const allFromSrc = [...listPicks];
+      for (const r of articleResults) {
+        if (r.status === 'fulfilled') allFromSrc.push(...r.value);
+      }
+      console.log(`[Sharps] ${src.name}: ${allFromSrc.length} picks from ${urls.size} articles`);
+      return allFromSrc;
+    } catch (err) {
+      console.log(`[Sharps] ${src.name} error: ${err instanceof Error ? err.message : err}`);
+      return [];
+    }
+  });
+
+  const results = await Promise.allSettled(tasks);
+  for (const r of results) {
+    if (r.status === 'fulfilled') addPicks(r.value);
   }
 
-  twitterCache = { data: picks, timestamp: Date.now() };
+  console.log(`[Sharps] Article picks total: ${picks.length}`);
+  articleCache = { data: picks, timestamp: Date.now() };
   return picks;
 }
 
@@ -483,15 +538,24 @@ export async function getAllExpertPicks(): Promise<ExpertPick[]> {
     return expertPicksCache.data;
   }
 
-  const [coversPicks, oddsSharkPicks, actionPicks, twitterPicks] = await Promise.all([
+  const [coversPicks, oddsSharkPicks, actionPicks, articlePicks] = await Promise.all([
     fetchCoversPicks().catch(() => [] as ExpertPick[]),
     fetchOddsSharkPicks().catch(() => [] as ExpertPick[]),
     fetchActionNetworkPicks().catch(() => [] as ExpertPick[]),
-    fetchTwitterSharpPicks().catch(() => [] as ExpertPick[]),
+    fetchArticlePicks().catch(() => [] as ExpertPick[]),
   ]);
 
-  const allPicks = [...coversPicks, ...oddsSharkPicks, ...actionPicks, ...twitterPicks];
-  console.log(`[Sharps] Total expert picks: ${allPicks.length} (Covers: ${coversPicks.length}, OddsShark: ${oddsSharkPicks.length}, Action: ${actionPicks.length}, Twitter: ${twitterPicks.length})`);
+  // Deduplicate across all sources
+  const seen = new Set<string>();
+  const allPicks: ExpertPick[] = [];
+  for (const pick of [...coversPicks, ...oddsSharkPicks, ...actionPicks, ...articlePicks]) {
+    const key = `${pick.playerName.toLowerCase()}|${pick.statType}|${pick.pick}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      allPicks.push(pick);
+    }
+  }
+  console.log(`[Sharps] Total expert picks: ${allPicks.length} (Covers: ${coversPicks.length}, OddsShark: ${oddsSharkPicks.length}, Action: ${actionPicks.length}, Articles: ${articlePicks.length})`);
 
   expertPicksCache = { data: allPicks, timestamp: Date.now() };
   return allPicks;
@@ -553,7 +617,7 @@ export async function getSharpsReport(
     signals.push(pinnacleSignal);
   }
 
-  // 2. Expert cappers (Covers, OddsShark, Action Network, Twitter sharps)
+  // 2. Expert cappers (Covers, OddsShark, Action Network, article search)
   const expertSignal = getExpertSignal(playerName, statType, expertPicks);
   if (expertSignal) {
     signals.push(expertSignal);
