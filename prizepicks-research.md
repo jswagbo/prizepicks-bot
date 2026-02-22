@@ -8,57 +8,10 @@ You are a professional DFS analyst with access to a quantitative data pipeline A
 Run the analysis pipeline:
 
 ```bash
-cd "/Users/jeffnwagbo/The Fund" && npx tsx -e "
-import { PrizePicksClient } from './src/prizepicks/prizepicks-client';
-import { NBAStatsClient } from './src/prizepicks/nba-stats-client';
-import { MatchupAnalyzer } from './src/prizepicks/matchup-analyzer';
-import { PickScorer } from './src/prizepicks/pick-scorer';
-import { initializeDatabase } from './src/core/db/database';
-import { getConfig } from './src/config';
-
-const config = getConfig();
-initializeDatabase({ path: config.databasePath });
-
-const pp = new PrizePicksClient();
-const nba = new NBAStatsClient();
-const analyzer = new MatchupAnalyzer(nba);
-const scorer = new PickScorer();
-
-(async () => {
-  // Get today's PrizePicks NBA projections
-  const projections = await pp.getProjections('NBA');
-  console.log('NBA projections:', projections.length);
-
-  // Get today's games for context
-  const games = await nba.getTodaysGames();
-  console.log('Games today:', games.length);
-  games.forEach(g => console.log('  ', g.homeTeam, 'vs', g.awayTeam));
-
-  // Analyze top projections (by popular stat types)
-  const targetStats = ['Points', 'Rebounds', 'Assists', 'Pts+Rebs+Asts', '3-PT Made', 'Fantasy Score'];
-  const filtered = projections.filter(p => targetStats.some(s => p.statType.includes(s)));
-  console.log('Filtered projections:', filtered.length);
-
-  // Run matchup analysis on each (limit to avoid API hammering)
-  const analyzed = [];
-  for (const proj of filtered.slice(0, 80)) {
-    try {
-      const matchup = await analyzer.analyze(proj.playerName, proj.statType, proj.team, proj.line, 'NBA');
-      const score = scorer.scoreProjection(proj, matchup);
-      analyzed.push({ projection: proj, matchup, score });
-    } catch (e) {
-      // Skip players we can't find stats for
-    }
-  }
-
-  // Sort by absolute edge
-  analyzed.sort((a, b) => Math.abs(b.score.totalScore) - Math.abs(a.score.totalScore));
-
-  // Output top 20 for Claude to analyze
-  console.log(JSON.stringify(analyzed.slice(0, 20), null, 2));
-})();
-" 2>&1
+cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export ODDS_API_KEY && npx tsx run-report.ts 2>&1
 ```
+
+This runs the full pipeline (fetch projections, analyze matchups, score picks) and outputs JSON data.
 
 Save the JSON output to /Users/jeffnwagbo/clawd/memory/prizepicks-data-today.json
 
@@ -110,22 +63,16 @@ This is the QUALITATIVE layer on top of the quantitative model. The model finds 
 ## Step 4: Check Yesterday's Performance (if available)
 
 ```bash
-cd "/Users/jeffnwagbo/The Fund" && npx tsx -e "
-import { ResultsTracker } from './src/prizepicks/results-tracker';
+cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export ODDS_API_KEY && npx tsx -e "
+import { updatePickResults, checkResults } from './src/prizepicks/results-tracker';
 import { initializeDatabase } from './src/core/db/database';
-import { getConfig } from './src/config';
 
-const config = getConfig();
-initializeDatabase({ path: config.databasePath });
-const tracker = new ResultsTracker();
+initializeDatabase({ path: './data/fund.db' });
 
 (async () => {
-  // Check yesterday's results
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  await tracker.updatePickResults(yesterday);
-  
-  // Get overall performance
-  const stats = tracker.getPerformanceStats(30);
+  await updatePickResults(yesterday);
+  const stats = checkResults(30);
   console.log(JSON.stringify(stats, null, 2));
 })();
 " 2>&1
