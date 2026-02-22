@@ -70,6 +70,8 @@ export interface TodaysGame {
   status: string;
   /** Point spread from ESPN odds (negative = home favored). Null if unavailable. */
   spread: number | null;
+  /** Over/under total from ESPN odds. Null if unavailable. */
+  total: number | null;
 }
 
 export interface TeamDefenseRanking {
@@ -436,6 +438,7 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
       startTime: '',
       status: 'Scheduled',
       spread,
+      total: null,
     });
     teamsInGames.add(homeAbbr);
     teamsInGames.add(awayAbbr);
@@ -456,7 +459,8 @@ export async function getTodaysGames(): Promise<TodaysGame[]> {
   if (pyGames) {
     for (const pg of pyGames) {
       if (!teamsInGames.has(pg.homeTeam) && !teamsInGames.has(pg.awayTeam)) {
-        pg.spread = null; // no spread available
+        pg.spread = null;
+        pg.total = null;
         games.push(pg);
         teamsInGames.add(pg.homeTeam);
         teamsInGames.add(pg.awayTeam);
