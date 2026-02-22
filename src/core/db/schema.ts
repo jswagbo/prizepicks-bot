@@ -554,6 +554,26 @@ CREATE TABLE IF NOT EXISTS prizepicks_performance (
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- =============================================================================
+-- PrizePicks: Pick Results (Historical Hit Rate Tracking)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS pick_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  player_name TEXT NOT NULL,
+  stat_type TEXT NOT NULL,
+  pick_direction TEXT NOT NULL CHECK (pick_direction IN ('OVER', 'UNDER')),
+  edge_bucket TEXT NOT NULL,
+  hit INTEGER NOT NULL,
+  line REAL,
+  actual_result REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pick_results_stat ON pick_results(stat_type, edge_bucket);
+CREATE INDEX IF NOT EXISTS idx_pick_results_date ON pick_results(date);
 `;
 
 /**

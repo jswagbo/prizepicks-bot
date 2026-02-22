@@ -130,6 +130,45 @@ export async function scoreProjection(
     }
   }
 
+  // ─── Pace Adjustment ─────────────────────────────────────────────────────
+
+  let paceBonus = 0;
+  if (matchup.paceAdjustment !== 0) {
+    // Positive pace adjustment → boost OVERs, negative → boost UNDERs
+    // Apply 50% of the pace differential (conservative weighting)
+    paceBonus = matchup.paceAdjustment * 0.5;
+    
+    console.log(
+      `[Scorer] ${projection.playerName}: Pace adjustment ${(matchup.paceAdjustment * 100).toFixed(1)}% → ` +
+      `${(paceBonus * 100).toFixed(1)}% bonus`
+    );
+  }
+
+  // ─── Back-to-Back Penalty ────────────────────────────────────────────────
+
+  let backToBackPenalty = 0;
+  if (matchup.isBackToBack) {
+    backToBackPenalty = 0.05; // -5% penalty for B2B games
+    console.log(`[Scorer] ${projection.playerName}: Back-to-back detected → -5% penalty`);
+  }
+
+  // ─── Minutes Projection Boost ────────────────────────────────────────────
+
+  let minutesBonus = 0;
+  if (matchup.expectedMinutes !== null && matchup.seasonAvgMinutes !== null) {
+    const minutesDiff = (matchup.expectedMinutes - matchup.seasonAvgMinutes) / matchup.seasonAvgMinutes;
+    
+    // If expected minutes are 20% above season avg, add proportional boost
+    if (Math.abs(minutesDiff) > 0.05) {
+      minutesBonus = minutesDiff * 0.3; // Apply 30% of the minutes differential as edge
+      
+      console.log(
+        `[Scorer] ${projection.playerName}: Minutes ${matchup.expectedMinutes} vs season ${matchup.seasonAvgMinutes} → ` +
+        `${(minutesBonus * 100).toFixed(1)}% bonus`
+      );
+    }
+  }
+
   // ─── Injury Adjustments ──────────────────────────────────────────────────
 
   let injuryBonus = 0;
@@ -258,9 +297,38 @@ export async function scoreProjection(
     console.error(`[Scorer] Error fetching sharps report for ${projection.playerName}:`, err);
   }
 
+  // ─── Historical Hit Rate Adjustment ──────────────────────────────────────
+
+  let hitRateAdjustment = 0;
+  const prelimScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus + paceBonus + minutesBonus;
+  const edgeBucket = edgeToBucket(prelimScore);
+  const historicalHitRate = getHistoricalHitRate(projection.statType, edgeBucket);
+  
+  if (historicalHitRate !== null) {
+    // If historical hit rate is significantly below 50%, reduce confidence
+    // Target: 52.38% for profitability at -110 odds
+    const targetHitRate = 0.5238;
+    const hitRateDiff = historicalHitRate - targetHitRate;
+    
+    if (hitRateDiff < -0.05) {
+      // Historical underperformance → reduce edge
+      hitRateAdjustment = hitRateDiff * 0.5; // Apply 50% of the deficit
+      
+      console.log(
+        `[Scorer] ${projection.playerName} ${projection.statType}: Historical hit rate ${(historicalHitRate * 100).toFixed(1)}% ` +
+        `(bucket: ${edgeBucket}) → ${(hitRateAdjustment * 100).toFixed(1)}% penalty`
+      );
+    }
+  }
+
   // ─── Final Score ─────────────────────────────────────────────────────────
 
-  const rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus;
+  let rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus + paceBonus + minutesBonus + hitRateAdjustment;
+  
+  // Apply back-to-back penalty to OVERs
+  if (backToBackPenalty > 0 && rawScore > 0) {
+    rawScore -= backToBackPenalty;
+  }
   
   // Apply blowout adjustment: penalize OVERs, boost UNDERs
   let totalScore = rawScore;
@@ -286,7 +354,7 @@ export async function scoreProjection(
   
   if (Math.abs(baseEdge) > 0.02) {
     reasons.push(
-      `Model line ${matchup.estimatedLine} vs PP line ${matchup.prizePicksLine} (${(baseEdge * 100).toFixed(1)}% edge)`
+      `Model line ${matchup.estimatedLine} (EWMA ${matchup.ewma}) vs PP line ${matchup.prizePicksLine} (${(baseEdge * 100).toFixed(1)}% edge)`
     );
   }
   
@@ -294,6 +362,10 @@ export async function scoreProjection(
     reasons.push(`Favorable matchup (${matchup.matchupGrade}) vs ${matchup.opponent}`);
   } else if (matchup.matchupGrade === 'D' || matchup.matchupGrade === 'F') {
     reasons.push(`Tough matchup (${matchup.matchupGrade}) vs ${matchup.opponent}`);
+  }
+  
+  if (matchup.opponentDefenseRank !== null) {
+    reasons.push(`Opponent defense rank: #${matchup.opponentDefenseRank} in ${projection.statType}`);
   }
   
   if (trendBonus > 0) {
@@ -306,6 +378,19 @@ export async function scoreProjection(
     reasons.push('Home court advantage');
   }
   
+  if (paceBonus !== 0) {
+    const paceDirection = paceBonus > 0 ? 'Fast' : 'Slow';
+    reasons.push(`${paceDirection} pace game (${(matchup.paceAdjustment * 100).toFixed(1)}%)`);
+  }
+  
+  if (minutesBonus !== 0 && matchup.expectedMinutes !== null) {
+    reasons.push(`Expected ${matchup.expectedMinutes} min (season avg: ${matchup.seasonAvgMinutes})`);
+  }
+  
+  if (backToBackPenalty > 0) {
+    reasons.push(`⚠️ Back-to-back game → -5% OVER penalty`);
+  }
+  
   if (blowoutPenalty > 0) {
     const absSpread = Math.abs(matchup.gameSpread!);
     if (rawScore > 0) {
@@ -313,6 +398,10 @@ export async function scoreProjection(
     } else {
       reasons.push(`✅ Blowout boost: ${absSpread}pt spread → UNDER strengthened (+${(blowoutPenalty * 0.6 * 100).toFixed(1)}%)`);
     }
+  }
+  
+  if (historicalHitRate !== null) {
+    reasons.push(`Historical hit rate (${edgeBucket}): ${(historicalHitRate * 100).toFixed(1)}%`);
   }
   
   if (injuryContext) {
@@ -420,4 +509,86 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
   });
 
   insertAll(picks);
+}
+
+// ─── Historical Hit Rate Tracking ────────────────────────────────────────────
+
+/**
+ * Convert edge to bucket for hit rate tracking.
+ * Buckets: "low" (0-5%), "medium" (5-10%), "high" (10-15%), "very_high" (15%+)
+ */
+function edgeToBucket(edge: number): string {
+  const absEdge = Math.abs(edge);
+  if (absEdge >= 0.15) return 'very_high';
+  if (absEdge >= 0.10) return 'high';
+  if (absEdge >= 0.05) return 'medium';
+  return 'low';
+}
+
+/**
+ * Record the result of a pick after the game completes.
+ * Call this function after scraping actual results.
+ */
+export function recordPickResult(
+  date: string,
+  playerName: string,
+  statType: string,
+  pickDirection: 'OVER' | 'UNDER',
+  edge: number,
+  line: number,
+  actualResult: number,
+  hit: boolean
+): void {
+  const db = getDatabase();
+  const edgeBucket = edgeToBucket(edge);
+  
+  db.prepare(`
+    INSERT INTO pick_results 
+    (date, player_name, stat_type, pick_direction, edge_bucket, hit, line, actual_result)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    date,
+    playerName,
+    statType,
+    pickDirection,
+    edgeBucket,
+    hit ? 1 : 0,
+    line,
+    actualResult
+  );
+  
+  console.log(
+    `[Hit Rate] Recorded ${playerName} ${statType} ${pickDirection}: ` +
+    `${actualResult} vs ${line} = ${hit ? 'HIT' : 'MISS'} (edge bucket: ${edgeBucket})`
+  );
+}
+
+/**
+ * Get historical hit rate for a stat type + edge bucket.
+ * Returns null if insufficient data (<10 samples).
+ */
+export function getHistoricalHitRate(
+  statType: string,
+  edgeBucket: string
+): number | null {
+  const db = getDatabase();
+  
+  const result = db.prepare(`
+    SELECT 
+      COUNT(*) as total,
+      SUM(hit) as hits
+    FROM pick_results
+    WHERE stat_type = ? AND edge_bucket = ?
+  `).get(statType, edgeBucket) as { total: number; hits: number } | undefined;
+  
+  if (!result || result.total < 10) {
+    return null; // Need at least 10 samples for reliable rate
+  }
+  
+  const hitRate = result.hits / result.total;
+  console.log(
+    `[Hit Rate] ${statType} ${edgeBucket}: ${result.hits}/${result.total} = ${(hitRate * 100).toFixed(1)}%`
+  );
+  
+  return hitRate;
 }
