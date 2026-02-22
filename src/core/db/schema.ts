@@ -478,6 +478,22 @@ CREATE INDEX IF NOT EXISTS idx_picks_player ON prizepicks_picks(player_name);
 CREATE INDEX IF NOT EXISTS idx_picks_hit ON prizepicks_picks(hit);
 
 -- =============================================================================
+-- PrizePicks: Line Movements (Sharp Money Tracking)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS line_movements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_name TEXT NOT NULL,
+  stat_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  line REAL NOT NULL,
+  timestamp INTEGER NOT NULL,
+  game_date TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_movements_player ON line_movements(player_name, stat_type, game_date);
+
+-- =============================================================================
 -- PrizePicks: Player Game Logs Cache
 -- =============================================================================
 

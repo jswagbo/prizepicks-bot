@@ -12,17 +12,12 @@
 
 import { getDatabase } from '../core/db/database';
 import { getInjuryReport, type InjuryReport } from './injury-news-client';
+import { fetchPlayerProps, type BookLine } from './odds-service';
+
+// Re-export BookLine for backward compatibility
+export type { BookLine } from './odds-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-
-export interface BookLine {
-  book: string;           // "DraftKings" | "FanDuel"
-  playerName: string;
-  statType: string;       // "Points", "Rebounds", "Assists", "Pts+Rebs+Asts", etc.
-  line: number;           // e.g. 22.5
-  overPrice: number;      // decimal odds, e.g. 1.83
-  underPrice: number;     // decimal odds, e.g. 1.91
-}
 
 export interface DiscrepancyResearch {
   reason: string;           // human-readable explanation of why lines might differ
@@ -88,11 +83,6 @@ for (const [pp, book] of Object.entries(PP_TO_BOOK_STAT)) {
   BOOK_TO_PP_STAT[book] = pp;
 }
 
-// ─── Cache ───────────────────────────────────────────────────────────────────
-
-let bookPropsCache: { data: BookLine[]; timestamp: number } | null = null;
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
 // ─── Name Matching ───────────────────────────────────────────────────────────
 
 /**
@@ -119,99 +109,8 @@ function namesMatch(a: string, b: string): boolean {
 }
 
 // ─── Core: Fetch Player Props from Books ─────────────────────────────────────
-
-export async function fetchBookPlayerProps(): Promise<BookLine[]> {
-  if (bookPropsCache && Date.now() - bookPropsCache.timestamp < CACHE_TTL) {
-    console.log(`[Books] Returning cached props (${bookPropsCache.data.length} lines)`);
-    return bookPropsCache.data;
-  }
-
-  const apiKey = process.env.ODDS_API_KEY;
-  if (!apiKey) {
-    console.error('[Books] ODDS_API_KEY not set');
-    return [];
-  }
-
-  const allLines: BookLine[] = [];
-
-  try {
-    const eventsRes = await fetch(
-      `https://api.odds-api.io/v3/events?sport=basketball&league=usa-nba&apiKey=${apiKey}`
-    );
-    if (!eventsRes.ok) {
-      console.error(`[Books] Events API error: ${eventsRes.status}`);
-      return [];
-    }
-
-    const events = (await eventsRes.json()) as Array<{
-      id: number; home: string; away: string; date: string; status: string;
-    }>;
-
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const pendingEvents = events.filter(e =>
-      e.status === 'pending' && e.date.slice(0, 10) === todayStr
-    );
-
-    console.log(`[Books] ${pendingEvents.length} pending games today`);
-
-    for (const event of pendingEvents) {
-      try {
-        const oddsRes = await fetch(
-          `https://api.odds-api.io/v3/odds?sport=basketball&league=usa-nba` +
-          `&eventId=${event.id}&oddsType=player_props` +
-          `&bookmakers=DraftKings,FanDuel&apiKey=${apiKey}`
-        );
-
-        if (!oddsRes.ok) continue;
-
-        const oddsData = (await oddsRes.json()) as {
-          bookmakers: Record<string, Array<{
-            name: string;
-            odds: Array<{ label: string; hdp: number; over: string; under: string }>;
-          }>>;
-        };
-
-        for (const [bookName, markets] of Object.entries(oddsData.bookmakers || {})) {
-          const propsMarket = markets.find(m => m.name === 'Player Props');
-          if (!propsMarket) continue;
-
-          for (const prop of propsMarket.odds) {
-            const match = prop.label.match(/^(.+?)\s*\((.+)\)$/);
-            if (!match) continue;
-
-            const line = prop.hdp;
-            const overPrice = parseFloat(prop.over);
-            const underPrice = parseFloat(prop.under);
-
-            // Skip malformed lines (Double+Double often has undefined hdp)
-            if (line == null || isNaN(line) || isNaN(overPrice) || isNaN(underPrice)) continue;
-
-            allLines.push({
-              book: bookName,
-              playerName: match[1].trim(),
-              statType: match[2].trim(),
-              line,
-              overPrice,
-              underPrice,
-            });
-          }
-        }
-
-        await new Promise(r => setTimeout(r, 200));
-      } catch (err) {
-        console.log(`[Books] Error for event ${event.id}:`,
-          err instanceof Error ? err.message : err);
-      }
-    }
-
-    console.log(`[Books] Fetched ${allLines.length} player prop lines across ${pendingEvents.length} games`);
-  } catch (err) {
-    console.error('[Books] Error:', err instanceof Error ? err.message : err);
-  }
-
-  bookPropsCache = { data: allLines, timestamp: Date.now() };
-  return allLines;
-}
+// NOTE: Player props fetching is now handled by odds-service.ts
+// Use: import { fetchPlayerProps } from './odds-service';
 
 // ─── Discrepancy Research ────────────────────────────────────────────────────
 
@@ -604,7 +503,7 @@ export async function getConsensusForPick(
   statType: string,
   ppLine?: number
 ): Promise<ConsensusData | null> {
-  const bookLines = await fetchBookPlayerProps();
+  const bookLines = await fetchPlayerProps();
   if (bookLines.length === 0) return null;
 
   const bookStatType = PP_TO_BOOK_STAT[statType] || statType;

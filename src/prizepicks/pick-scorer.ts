@@ -11,6 +11,7 @@ import { type PrizePicksProjection } from './prizepicks-client';
 import { getDatabase } from '../core/db/database';
 import { type InjuryReport, type TeamInjuryImpact, getInjuryReport, getTeamInjuryImpact } from './injury-news-client';
 import { type ConsensusData, getConsensusForPick } from './expert-picks-client';
+import { getSharpsReport, type SharpsReport } from './sharps-intel';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -208,9 +209,40 @@ export async function scoreProjection(
     console.error(`[Scorer] Error fetching expert consensus for ${projection.playerName}:`, err);
   }
 
+  // ─── Sharps Intel ──────────────────────────────────────────────────────────
+
+  let sharpBonus = 0;
+  let sharpsContext: string | undefined;
+
+  try {
+    const sharpsReport = await getSharpsReport(projection.playerName, projection.statType, projection.line);
+
+    if (sharpsReport.signals.length > 0) {
+      // sharpScore ranges -1 to 1; multiply by 0.04 for up to ±4% edge
+      sharpBonus = sharpsReport.sharpScore * 0.04;
+
+      const signalSummaries = sharpsReport.signals.map(s =>
+        `${s.source}: ${s.direction} (${(s.confidence * 100).toFixed(0)}%)`
+      );
+      sharpsContext = `Sharps [${sharpsReport.overallDirection}]: ${signalSummaries.join(', ')}`;
+
+      // Update sharp signal based on sharps report vs our preliminary direction
+      const prelimDirection = (baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus) > 0 ? 'OVER' : 'UNDER';
+      if (sharpsReport.overallDirection === prelimDirection) {
+        sharpSignal = 'AGREE';
+      } else if (sharpsReport.overallDirection !== 'NEUTRAL') {
+        sharpSignal = 'DISAGREE';
+      }
+
+      console.log(`[Scorer] ${projection.playerName}: ${sharpsContext}`);
+    }
+  } catch (err) {
+    console.error(`[Scorer] Error fetching sharps report for ${projection.playerName}:`, err);
+  }
+
   // ─── Final Score ─────────────────────────────────────────────────────────
 
-  const rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus;
+  const rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus;
   
   // Apply blowout penalty only to OVERs (rawScore > 0)
   let totalScore = rawScore;
@@ -263,6 +295,10 @@ export async function scoreProjection(
   
   if (expertConsensus) {
     reasons.push(expertConsensus);
+  }
+
+  if (sharpsContext) {
+    reasons.push(sharpsContext);
   }
 
   return {
