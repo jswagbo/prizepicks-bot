@@ -31,11 +31,29 @@ async function main() {
   
   for (const proj of projections) {
     try {
-      const matchup = await analyzeMatchup(proj, games);
+      // Find the game this player is in
+      const game = games.find(g => 
+        g.homeTeam === proj.team || g.awayTeam === proj.team
+      );
+      
+      if (!game) continue; // Skip if we can't find the game
+      
+      const opponent = game.homeTeam === proj.team ? game.awayTeam : game.homeTeam;
+      const homeAway = game.homeTeam === proj.team ? 'home' : 'away';
+      
+      const matchup = await analyzeMatchup(
+        proj.playerName,
+        proj.statType,
+        opponent,
+        proj.line,
+        homeAway,
+        game.spread
+      );
       const pick = await scoreProjection(proj, matchup, injuries);
       scored.push(pick);
     } catch (e: any) {
-      // skip silently
+      // skip silently (can uncomment for debugging)
+      // console.error(`Error scoring ${proj.playerName} ${proj.statType}:`, e.message);
     }
     processed++;
     if (processed % 500 === 0) console.log(`  Processed ${processed}/${projections.length}`);

@@ -12,6 +12,7 @@ import { getDatabase } from '../core/db/database';
 import { type InjuryReport, type TeamInjuryImpact, getInjuryReport, getTeamInjuryImpact } from './injury-news-client';
 import { type ConsensusData, getConsensusForPick } from './expert-picks-client';
 import { getSharpsReport, type SharpsReport } from './sharps-intel';
+import { fetchGameSpreads } from './odds-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,23 @@ export async function scoreProjection(
   matchup: MatchupAnalysis,
   injuries?: InjuryReport[]
 ): Promise<ScoredPick> {
+  // Auto-fetch game spread if not provided in matchup
+  if (matchup.gameSpread === null || matchup.gameSpread === undefined) {
+    try {
+      const spreads = await fetchGameSpreads();
+      // Try to match by team name in spread keys
+      for (const [gameKey, spread] of spreads) {
+        if (gameKey.toLowerCase().includes(projection.team.toLowerCase()) ||
+            gameKey.toLowerCase().includes(matchup.opponent.toLowerCase())) {
+          matchup.gameSpread = spread;
+          break;
+        }
+      }
+    } catch {
+      // Non-fatal — proceed without spread data
+    }
+  }
+
   // Base edge: how far our model line is from PrizePicks line
   const baseEdge = matchup.prizePicksLine !== 0
     ? (matchup.estimatedLine - matchup.prizePicksLine) / matchup.prizePicksLine
