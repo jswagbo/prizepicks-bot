@@ -262,10 +262,14 @@ export async function scoreProjection(
 
   const rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus;
   
-  // Apply blowout penalty only to OVERs (rawScore > 0)
+  // Apply blowout adjustment: penalize OVERs, boost UNDERs
   let totalScore = rawScore;
-  if (rawScore > 0) {
-    totalScore = rawScore - blowoutPenalty;
+  if (blowoutPenalty > 0) {
+    if (rawScore > 0) {
+      totalScore = rawScore - blowoutPenalty; // Penalize OVERs
+    } else {
+      totalScore = rawScore - (blowoutPenalty * 0.6); // Boost UNDERs (push more negative = stronger UNDER)
+    }
   }
   
   // If player is injured/questionable, reduce confidence (don't penalize score, just flag it)
@@ -302,9 +306,13 @@ export async function scoreProjection(
     reasons.push('Home court advantage');
   }
   
-  if (blowoutPenalty > 0 && rawScore > 0) {
+  if (blowoutPenalty > 0) {
     const absSpread = Math.abs(matchup.gameSpread!);
-    reasons.push(`⚠️ Blowout risk: ${absSpread}pt spread → OVER penalized (-${(blowoutPenalty * 100).toFixed(1)}%)`);
+    if (rawScore > 0) {
+      reasons.push(`⚠️ Blowout risk: ${absSpread}pt spread → OVER penalized (-${(blowoutPenalty * 100).toFixed(1)}%)`);
+    } else {
+      reasons.push(`✅ Blowout boost: ${absSpread}pt spread → UNDER strengthened (+${(blowoutPenalty * 0.6 * 100).toFixed(1)}%)`);
+    }
   }
   
   if (injuryContext) {
