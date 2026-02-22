@@ -225,13 +225,13 @@ export async function scoreProjection(
       
       // Consensus bonus: if 60%+ of experts agree with our pick
       if (expertAgreePercent >= 60) {
-        expertBonus = 0.02;
+        expertBonus = 0.06;
         expertConsensus = `${consensus.expertPicks.length} experts: ${expertAgreePercent.toFixed(0)}% agree ${ourPickDirection}`;
       }
       
       // Sharp money bonus: if sharp money agrees, add extra edge
       if (consensus.sharpMoney && consensus.sharpMoney === ourPickDirection) {
-        expertBonus += 0.03;
+        expertBonus += 0.08;
         sharpSignal = 'AGREE';
         expertConsensus = expertConsensus 
           ? `${expertConsensus} | Sharp money agrees ✓`
@@ -253,10 +253,10 @@ export async function scoreProjection(
 
         if (research.trustLevel === 'low') {
           // Research found reasons to distrust the discrepancy — reduce expert bonus
-          expertBonus = Math.max(0, expertBonus - 0.02);
+          expertBonus = Math.max(0, expertBonus - 0.04);
           expertConsensus += ` | ⚠️ LOW TRUST: ${research.factors[0]}`;
         } else if (research.trustLevel === 'high') {
-          expertBonus += 0.01;
+          expertBonus += 0.03;
         }
       }
       
@@ -275,8 +275,8 @@ export async function scoreProjection(
     const sharpsReport = await getSharpsReport(projection.playerName, projection.statType, projection.line);
 
     if (sharpsReport.signals.length > 0) {
-      // sharpScore ranges -1 to 1; multiply by 0.04 for up to ±4% edge
-      sharpBonus = sharpsReport.sharpScore * 0.04;
+      // sharpScore ranges -1 to 1; multiply by 0.10 for up to ±10% edge
+      sharpBonus = sharpsReport.sharpScore * 0.10;
 
       const signalSummaries = sharpsReport.signals.map(s =>
         `${s.source}: ${s.direction} (${(s.confidence * 100).toFixed(0)}%)`
