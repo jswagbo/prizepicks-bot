@@ -88,30 +88,125 @@ function getStatValue(row: Record<string, unknown>, statType: string): number {
   return (row[col] as number) || 0;
 }
 
-// ─── Pace Factor (2025-26 NBA Pace Rankings) ────────────────────────────────
+// ─── Pace Factor (Live from NBA.com Stats API) ─────────────────────────────
 
-/** Team pace ratings (possessions per game, 2025-26 season) */
-const TEAM_PACE: Record<string, number> = {
-  'BOS': 102.5, 'IND': 103.2, 'GS': 101.8, 'SAC': 102.1, 'MEM': 101.5,
-  'ATL': 100.9, 'MIN': 100.2, 'MIL': 100.7, 'PHX': 101.1, 'NO': 101.3,
-  'OKC': 99.8, 'DEN': 99.5, 'LAL': 99.9, 'LAC': 99.2, 'DAL': 99.1,
-  'HOU': 100.4, 'CLE': 98.8, 'TOR': 100.6, 'NY': 98.2, 'CHI': 99.3,
-  'ORL': 98.5, 'PHI': 98.1, 'BKN': 99.7, 'MIA': 97.9, 'WSH': 100.8,
-  'CHA': 100.3, 'DET': 99.4, 'POR': 100.1, 'SA': 101.0, 'UTAH': 99.6,
+const NBA_TEAM_ABBREV: Record<string, string> = {
+  'Atlanta Hawks':'ATL','Boston Celtics':'BOS','Brooklyn Nets':'BKN','Charlotte Hornets':'CHA',
+  'Chicago Bulls':'CHI','Cleveland Cavaliers':'CLE','Dallas Mavericks':'DAL','Denver Nuggets':'DEN',
+  'Detroit Pistons':'DET','Golden State Warriors':'GS','Houston Rockets':'HOU','Indiana Pacers':'IND',
+  'LA Clippers':'LAC','Los Angeles Lakers':'LAL','Memphis Grizzlies':'MEM','Miami Heat':'MIA',
+  'Milwaukee Bucks':'MIL','Minnesota Timberwolves':'MIN','New Orleans Pelicans':'NO',
+  'New York Knicks':'NY','Oklahoma City Thunder':'OKC','Orlando Magic':'ORL',
+  'Philadelphia 76ers':'PHI','Phoenix Suns':'PHX','Portland Trail Blazers':'POR',
+  'Sacramento Kings':'SAC','San Antonio Spurs':'SA','Toronto Raptors':'TOR',
+  'Utah Jazz':'UTAH','Washington Wizards':'WSH',
 };
 
-const LEAGUE_AVG_PACE = 100.0;
+// In-memory cache for pace data (refreshed max once per 12h)
+let cachedPace: Record<string, number> | null = null;
+let cachedLeagueAvgPace = 100.0;
+let paceLastFetched = 0;
+const PACE_CACHE_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+/**
+ * Fetch team pace ratings from NBA.com stats API.
+ * Caches in memory for 12 hours, falls back to DB cache if API fails.
+ */
+export async function fetchTeamPace(): Promise<{ pace: Record<string, number>; leagueAvg: number }> {
+  const now = Date.now();
+  if (cachedPace && (now - paceLastFetched) < PACE_CACHE_MS) {
+    return { pace: cachedPace, leagueAvg: cachedLeagueAvgPace };
+  }
+
+  const db = getDatabase();
+
+  // Try DB cache first (< 24h old)
+  const dbCached = db.prepare(`
+    SELECT team, pace FROM team_pace_ratings WHERE updated_at > datetime('now', '-24 hours')
+  `).all() as Array<{ team: string; pace: number }>;
+
+  if (dbCached.length >= 25) {
+    cachedPace = {};
+    let sum = 0;
+    for (const r of dbCached) {
+      cachedPace[r.team] = r.pace;
+      sum += r.pace;
+    }
+    cachedLeagueAvgPace = sum / dbCached.length;
+    paceLastFetched = now;
+    console.log(`[pace] Loaded ${dbCached.length} teams from DB cache`);
+    return { pace: cachedPace, leagueAvg: cachedLeagueAvgPace };
+  }
+
+  // Fetch from NBA.com stats API
+  try {
+    const url = 'https://stats.nba.com/stats/leaguedashteamstats?Conference=&DateFrom=&DateTo=&Division=&GameScope=&GameSegment=&Height=&ISTRound=&LastNGames=0&LeagueID=00&Location=&MeasureType=Advanced&Month=0&OpponentTeamID=0&Outcome=&PORound=0&PaceAdjust=N&PerMode=PerGame&Period=0&PlayerExperience=&PlayerPosition=&PlusMinus=N&Rank=N&Season=2025-26&SeasonSegment=&SeasonType=Regular+Season&ShotClockRange=&StarterBench=&TeamID=0&TwoWay=0&VsConference=&VsDivision=';
+    const res = await fetch(url, {
+      headers: {
+        'Referer': 'https://www.nba.com/',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'x-nba-stats-origin': 'stats',
+        'x-nba-stats-token': 'true',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const data: any = await res.json();
+    const headers = data.resultSets[0].headers as string[];
+    const paceIdx = headers.indexOf('PACE');
+    const nameIdx = headers.indexOf('TEAM_NAME');
+    const rows = data.resultSets[0].rowSet;
+
+    if (paceIdx < 0 || rows.length === 0) throw new Error('PACE column not found');
+
+    cachedPace = {};
+    let sum = 0;
+    const upsert = db.prepare(`
+      INSERT OR REPLACE INTO team_pace_ratings (team, pace, updated_at) VALUES (?, ?, datetime('now'))
+    `);
+
+    for (const r of rows) {
+      const abbrev = NBA_TEAM_ABBREV[r[nameIdx]] || r[nameIdx];
+      const pace = r[paceIdx] as number;
+      cachedPace[abbrev] = pace;
+      sum += pace;
+      upsert.run(abbrev, pace);
+    }
+
+    cachedLeagueAvgPace = sum / rows.length;
+    paceLastFetched = now;
+    console.log(`[pace] Fetched ${rows.length} teams from NBA.com (avg: ${cachedLeagueAvgPace.toFixed(2)})`);
+    return { pace: cachedPace, leagueAvg: cachedLeagueAvgPace };
+  } catch (e: any) {
+    console.error(`[pace] NBA.com fetch failed: ${e.message}, using fallback`);
+    // Return whatever we have (even stale DB data or empty)
+    if (dbCached.length > 0) {
+      cachedPace = {};
+      let sum = 0;
+      for (const r of dbCached) {
+        cachedPace[r.team] = r.pace;
+        sum += r.pace;
+      }
+      cachedLeagueAvgPace = sum / dbCached.length;
+      paceLastFetched = now;
+      return { pace: cachedPace, leagueAvg: cachedLeagueAvgPace };
+    }
+    return { pace: {}, leagueAvg: 100.0 };
+  }
+}
 
 /**
  * Calculate pace adjustment for a game.
  * Returns: (gamePace / leagueAvgPace - 1)
  * Positive = faster pace (boost OVERs), negative = slower pace (boost UNDERs)
+ * NOTE: Uses cached pace data. Call fetchTeamPace() once before scoring pipeline.
  */
 export function calculatePaceAdjustment(team1: string, team2: string): number {
-  const pace1 = TEAM_PACE[team1] ?? LEAGUE_AVG_PACE;
-  const pace2 = TEAM_PACE[team2] ?? LEAGUE_AVG_PACE;
+  const leagueAvg = cachedLeagueAvgPace || 100.0;
+  const pace1 = cachedPace?.[team1] ?? leagueAvg;
+  const pace2 = cachedPace?.[team2] ?? leagueAvg;
   const gamePace = (pace1 + pace2) / 2;
-  return (gamePace / LEAGUE_AVG_PACE) - 1;
+  return (gamePace / leagueAvg) - 1;
 }
 
 // ─── Exponential Weighted Moving Average ────────────────────────────────────

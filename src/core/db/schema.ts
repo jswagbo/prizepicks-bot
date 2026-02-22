@@ -540,6 +540,16 @@ CREATE TABLE IF NOT EXISTS team_defense_rankings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_defense_unique ON team_defense_rankings(team, league, stat_type);
 
 -- =============================================================================
+-- NBA: Team Pace Ratings Cache (from NBA.com stats API)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS team_pace_ratings (
+  team TEXT PRIMARY KEY,
+  pace REAL NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =============================================================================
 -- PrizePicks: Performance Tracking
 -- =============================================================================
 

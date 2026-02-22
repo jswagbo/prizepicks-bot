@@ -3,6 +3,7 @@ import { getInjuryReport, getTeamInjuryImpact } from './src/prizepicks/injury-ne
 import { getExpertPicks, getConsensusForPick } from './src/prizepicks/expert-picks-client';
 import { rankProjections, buildParlay, type ScoredPick } from './src/prizepicks/pick-scorer';
 import { getTeamDefenseRankings } from './src/prizepicks/nba-stats-client';
+import { fetchTeamPace } from './src/prizepicks/matchup-analyzer';
 import { writeFileSync } from 'fs';
 
 async function main() {
@@ -14,6 +15,7 @@ async function main() {
     getInjuryReport().catch(e => { console.error('Injury fetch failed:', e.message); return []; }),
     getExpertPicks().catch(e => { console.error('Expert picks failed:', e.message); return []; }),
     getTeamDefenseRankings().catch(e => { console.error('Defense rankings fetch failed:', e.message); return []; }),
+    fetchTeamPace().catch(e => { console.error('Pace fetch failed:', e.message); return { pace: {}, leagueAvg: 100 }; }),
   ]);
 
   console.log(`Defense rankings: ${defenseRankings.length} entries`);
