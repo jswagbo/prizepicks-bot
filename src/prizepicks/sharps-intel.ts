@@ -51,6 +51,7 @@ export interface LineMovement {
 // ─── Name Matching ───────────────────────────────────────────────────────────
 
 function namesMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
   const clean = (s: string) => s.toLowerCase().trim().replace(/\s+(jr\.?|sr\.?|iii|ii|iv)$/i, '');
   const aClean = clean(a);
   const bClean = clean(b);
