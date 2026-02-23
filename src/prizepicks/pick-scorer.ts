@@ -1,18 +1,26 @@
 /**
  * Pick Scorer
- * 
- * Scores PrizePicks projections to find the best value plays.
- * Combines matchup analysis with trend detection and home/away splits.
- * Integrates injury reports and expert consensus for additional edge.
+ *
+ * Scores PrizePicks projections using Pinnacle-line-driven edge detection.
+ *
+ * PRIMARY EDGE = Pinnacle divergence (0.5) + Consensus divergence (0.3) + Game environment (0.2)
+ *
+ * Trailing averages (L3/L5/L10) are kept as CONTEXT only — they are NOT
+ * factored into the score. PrizePicks already uses those to set their line.
  */
 
 import { type MatchupAnalysis } from './matchup-analyzer';
 import { type PrizePicksProjection } from './prizepicks-client';
 import { getDatabase } from '../core/db/database';
-import { type InjuryReport, type TeamInjuryImpact, getInjuryReport, getTeamInjuryImpact } from './injury-news-client';
+import {
+  type InjuryReport,
+  getTeamInjuryImpact,
+} from './injury-news-client';
 import { type ConsensusData, getConsensusForPick } from './expert-picks-client';
 import { getSharpsReport, type SharpsReport } from './sharps-intel';
-import { fetchGameSpreads } from './odds-service';
+import { fetchGameSpreads, fetchGameTotals } from './odds-service';
+import { getMarketEdge, describeMarketEdge, type MarketEdge } from './market-edge';
+import { getSharpProjection, describeSharpProjection } from './sharp-projections';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -24,11 +32,26 @@ export interface ScoredPick {
   ev: number; // expected value edge as decimal
   totalScore: number;
   reasoning: string;
-  injuryContext?: string; // e.g., "Booker OUT → +15% usage boost"
-  playerInjured?: boolean; // true if this player has an injury designation
-  playerInjuryStatus?: string; // e.g., "Day-To-Day", "Questionable", "Doubtful"
-  expertConsensus?: string; // e.g., "3/4 experts agree UNDER"
+  injuryContext?: string;
+  playerInjured?: boolean;
+  playerInjuryStatus?: string;
+  expertConsensus?: string;
   sharpSignal?: 'AGREE' | 'DISAGREE' | 'NEUTRAL';
+  // ─── New Pinnacle-model fields ────────────────────────────────────────────
+  /** PrizePicks line for this projection */
+  ppLine: number;
+  /** Pinnacle line (sharpest sportsbook) */
+  pinnacleLine: number | null;
+  /** Average of DK + FD + Pinnacle */
+  consensusLine: number | null;
+  /** (pinnacle_line - pp_line) / pp_line */
+  pinnacleEdge: number;
+  /** (consensus_line - pp_line) / pp_line */
+  consensusEdge: number;
+  /** Vegas game over/under total */
+  vegasTotal: number | null;
+  /** Projected line from Dimers / BettingPros sharp models */
+  sharpProjection: number | null;
 }
 
 export interface ParlayPick {
@@ -37,33 +60,25 @@ export interface ParlayPick {
   correlationNote: string;
 }
 
-// ─── Score Constants ─────────────────────────────────────────────────────────
-
-const MATCHUP_BONUS: Record<string, number> = {
-  A: 0.05,
-  B: 0.02,
-  C: 0,
-  D: -0.02,
-  F: -0.05,
-};
-
-const TREND_BONUS = 0.03;
-const HOME_BONUS = 0.01;
+// ─── Score Constants ──────────────────────────────────────────────────────────
 
 /**
  * Blowout penalty for OVER picks.
  * Starters get benched in blowouts, killing counting stats.
- * Scales with spread size: larger spread = bigger penalty.
  */
-const BLOWOUT_SPREAD_THRESHOLD = 8; // spreads >= 8 start getting penalized
-const BLOWOUT_PENALTY_PER_POINT = 0.008; // penalty per point of spread above threshold
-const BLOWOUT_MAX_PENALTY = 0.08; // cap the penalty
-
-// ─── Confidence Mapping ──────────────────────────────────────────────────────
+const BLOWOUT_SPREAD_THRESHOLD = 8;
+const BLOWOUT_PENALTY_PER_POINT = 0.008;
+const BLOWOUT_MAX_PENALTY = 0.08;
 
 /**
- * Map absolute score to 1-5 star confidence
+ * Vegas total thresholds for game environment adjustment.
  */
+const HIGH_TOTAL_THRESHOLD = 228;
+const LOW_TOTAL_THRESHOLD = 215;
+const GAME_ENV_BASE_ADJ = 0.02;
+
+// ─── Confidence Mapping ───────────────────────────────────────────────────────
+
 function scoreToConfidence(absScore: number): number {
   if (absScore >= 0.12) return 5;
   if (absScore >= 0.08) return 4;
@@ -72,54 +87,159 @@ function scoreToConfidence(absScore: number): number {
   return 1;
 }
 
-// ─── Scoring ─────────────────────────────────────────────────────────────────
+// ─── Game Total Lookup ────────────────────────────────────────────────────────
 
 /**
- * Score a single projection using matchup data, injury reports, and expert consensus
+ * Find the Vegas over/under total for a game given the two team names.
+ * Searches by matching team names in the totals map keys.
+ */
+function findVegasTotal(
+  totals: Map<string, number>,
+  team: string,
+  opponent: string
+): number | null {
+  if (totals.size === 0) return null;
+
+  const teamLc = team.toLowerCase();
+  const oppLc = opponent.toLowerCase();
+
+  for (const [gameKey, total] of totals) {
+    const keyLc = gameKey.toLowerCase();
+    // Match if both teams appear in the game key
+    if (
+      (keyLc.includes(teamLc) || teamLc.includes(keyLc.split(' vs ')[0]?.trim() ?? '')) &&
+      (keyLc.includes(oppLc) || oppLc.includes(keyLc.split(' vs ')[1]?.trim() ?? ''))
+    ) {
+      return total;
+    }
+    // Also check the reverse order
+    const parts = gameKey.split(' vs ');
+    if (parts.length === 2) {
+      const [home, away] = parts.map((p) => p.toLowerCase().trim());
+      if (
+        (home.includes(teamLc) || teamLc.includes(home)) &&
+        (away.includes(oppLc) || oppLc.includes(away))
+      )
+        return total;
+      if (
+        (away.includes(teamLc) || teamLc.includes(away)) &&
+        (home.includes(oppLc) || oppLc.includes(home))
+      )
+        return total;
+    }
+  }
+
+  return null;
+}
+
+// ─── Scoring Stats Classification ────────────────────────────────────────────
+
+/**
+ * Whether a stat type is a "scoring" stat — affects how we apply the
+ * Vegas-total game environment bonus.
+ * All stats benefit from high-pace/high-scoring environments to some degree.
+ */
+function isScoringRelatedStat(statType: string): boolean {
+  const lower = statType.toLowerCase();
+  return (
+    lower.includes('point') ||
+    lower.includes('pts') ||
+    lower.includes('assist') ||
+    lower.includes('ast') ||
+    lower.includes('rebound') ||
+    lower.includes('reb') ||
+    lower.includes('fantasy') ||
+    lower.includes('pra') ||
+    lower.includes('+')
+  );
+}
+
+// ─── Scoring ──────────────────────────────────────────────────────────────────
+
+/**
+ * Score a single projection using Pinnacle-driven edge detection.
+ *
+ * PRIMARY EDGE:
+ *   pinnacle_divergence (×0.5) + consensus_divergence (×0.3) + game_env_adj (×0.2)
+ *
+ * ADJUSTMENTS (additive):
+ *   + expert consensus bonus
+ *   + sharp signal bonus
+ *   + injury usage redistribution
+ *   − blowout penalty
+ *   − back-to-back penalty
  */
 export async function scoreProjection(
   projection: PrizePicksProjection,
   matchup: MatchupAnalysis,
   injuries?: InjuryReport[]
 ): Promise<ScoredPick> {
-  // Auto-fetch game spread if not provided in matchup
+  // ─── Fetch spreads and totals in parallel ──────────────────────────────────
+  const [spreads, totals] = await Promise.all([
+    fetchGameSpreads().catch((): Map<string, number> => new Map()),
+    fetchGameTotals().catch((): Map<string, number> => new Map()),
+  ]);
+
+  // Auto-fill game spread if not already set in matchup
   if (matchup.gameSpread === null || matchup.gameSpread === undefined) {
-    try {
-      const spreads = await fetchGameSpreads();
-      // Try to match by team name in spread keys
-      for (const [gameKey, spread] of spreads) {
-        if (gameKey.toLowerCase().includes(projection.team.toLowerCase()) ||
-            gameKey.toLowerCase().includes(matchup.opponent.toLowerCase())) {
-          matchup.gameSpread = spread;
-          break;
-        }
+    for (const [gameKey, spread] of spreads) {
+      if (
+        gameKey.toLowerCase().includes(projection.team.toLowerCase()) ||
+        gameKey.toLowerCase().includes(matchup.opponent.toLowerCase())
+      ) {
+        matchup.gameSpread = spread;
+        break;
       }
-    } catch {
-      // Non-fatal — proceed without spread data
     }
   }
 
-  // Base edge: how far our model line is from PrizePicks line
-  const baseEdge = matchup.prizePicksLine !== 0
-    ? (matchup.estimatedLine - matchup.prizePicksLine) / matchup.prizePicksLine
-    : 0;
+  // ─── Vegas total & game environment adjustment ────────────────────────────
+  const vegasTotal = findVegasTotal(totals, projection.team, matchup.opponent);
+  let gameEnvAdj = 0;
 
-  // Matchup bonus based on opponent defense grade
-  const matchupBonus = MATCHUP_BONUS[matchup.matchupGrade] || 0;
-
-  // Trend bonus: hot = last3 > last10 > season, cold = inverse
-  let trendBonus = 0;
-  if (matchup.last3Avg > matchup.last10Avg && matchup.last10Avg > matchup.seasonAvg) {
-    trendBonus = TREND_BONUS; // Hot streak — favors OVER
-  } else if (matchup.last3Avg < matchup.last10Avg && matchup.last10Avg < matchup.seasonAvg) {
-    trendBonus = -TREND_BONUS; // Cold streak — favors UNDER
+  if (vegasTotal !== null && isScoringRelatedStat(projection.statType)) {
+    if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
+      gameEnvAdj = GAME_ENV_BASE_ADJ; // High-scoring game → OVER boost
+    } else if (vegasTotal < LOW_TOTAL_THRESHOLD) {
+      gameEnvAdj = -GAME_ENV_BASE_ADJ; // Low-scoring game → UNDER boost
+    }
   }
 
-  // Home court bonus
-  const homeBonus = matchup.homeAway === 'home' ? HOME_BONUS : 0;
+  // Also incorporate team pace factor (from matchup) as additional env signal
+  // Pace is a known input, so we add a conservative portion (25%)
+  if (matchup.paceAdjustment !== 0) {
+    gameEnvAdj += matchup.paceAdjustment * 0.25;
+  }
 
-  // Blowout penalty: penalize OVERs in games with large spreads
-  // Starters get benched early in blowouts → counting stats suffer
+  // ─── Multi-book market edge (Pinnacle primary signal) ────────────────────
+  let marketEdge: MarketEdge;
+  try {
+    marketEdge = await getMarketEdge(
+      projection.playerName,
+      projection.statType,
+      projection.line
+    );
+  } catch {
+    marketEdge = {
+      playerName: projection.playerName,
+      statType: projection.statType,
+      ppLine: projection.line,
+      pinnacleLine: null,
+      draftKingsLine: null,
+      fanDuelLine: null,
+      consensusLine: null,
+      pinnacleEdge: 0,
+      consensusEdge: 0,
+    };
+  }
+
+  // ─── PRIMARY EDGE ─────────────────────────────────────────────────────────
+  const primaryEdge =
+    marketEdge.pinnacleEdge * 0.5 +
+    marketEdge.consensusEdge * 0.3 +
+    gameEnvAdj * 0.2;
+
+  // ─── Blowout penalty ──────────────────────────────────────────────────────
   let blowoutPenalty = 0;
   if (matchup.gameSpread !== null && matchup.gameSpread !== undefined) {
     const absSpread = Math.abs(matchup.gameSpread);
@@ -132,145 +252,108 @@ export async function scoreProjection(
     }
   }
 
-  // ─── Pace Adjustment ─────────────────────────────────────────────────────
-
-  let paceBonus = 0;
-  if (matchup.paceAdjustment !== 0) {
-    // Positive pace adjustment → boost OVERs, negative → boost UNDERs
-    // Apply 50% of the pace differential (conservative weighting)
-    paceBonus = matchup.paceAdjustment * 0.5;
-    
-    console.log(
-      `[Scorer] ${projection.playerName}: Pace adjustment ${(matchup.paceAdjustment * 100).toFixed(1)}% → ` +
-      `${(paceBonus * 100).toFixed(1)}% bonus`
-    );
-  }
-
-  // ─── Back-to-Back Penalty ────────────────────────────────────────────────
-
+  // ─── Back-to-back penalty ─────────────────────────────────────────────────
   let backToBackPenalty = 0;
   if (matchup.isBackToBack) {
-    backToBackPenalty = 0.05; // -5% penalty for B2B games
-    console.log(`[Scorer] ${projection.playerName}: Back-to-back detected → -5% penalty`);
+    backToBackPenalty = 0.05;
+    console.log(`[Scorer] ${projection.playerName}: Back-to-back → -5% OVER penalty`);
   }
 
-  // ─── Minutes Projection Boost ────────────────────────────────────────────
-
-  let minutesBonus = 0;
-  if (matchup.expectedMinutes !== null && matchup.seasonAvgMinutes !== null) {
-    const minutesDiff = (matchup.expectedMinutes - matchup.seasonAvgMinutes) / matchup.seasonAvgMinutes;
-    
-    // If expected minutes are 20% above season avg, add proportional boost
-    if (Math.abs(minutesDiff) > 0.05) {
-      minutesBonus = minutesDiff * 0.3; // Apply 30% of the minutes differential as edge
-      
-      console.log(
-        `[Scorer] ${projection.playerName}: Minutes ${matchup.expectedMinutes} vs season ${matchup.seasonAvgMinutes} → ` +
-        `${(minutesBonus * 100).toFixed(1)}% bonus`
-      );
-    }
-  }
-
-  // ─── Injury Adjustments ──────────────────────────────────────────────────
-
+  // ─── Injury adjustments ───────────────────────────────────────────────────
   let injuryBonus = 0;
   let injuryContext: string | undefined;
   let playerInjuryFlag = false;
 
   if (injuries && injuries.length > 0) {
-    // Check if the player themselves is injured/questionable
     const playerInjury = injuries.find(
       (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
     );
-    
+
     if (playerInjury && ['Questionable', 'Doubtful', 'Day-To-Day'].includes(playerInjury.status)) {
       playerInjuryFlag = true;
       injuryContext = `⚠️ ${playerInjury.status}: ${playerInjury.description}`;
-      
-      // Apply score penalty based on injury severity — injured players are unreliable
-      // OVER picks especially risky (limited minutes, rust, could re-aggravate)
+
       if (playerInjury.status === 'Doubtful') {
-        injuryBonus = -0.15; // Heavy penalty — might not even play
+        injuryBonus = -0.15;
       } else if (playerInjury.status === 'Questionable') {
-        injuryBonus = -0.10; // Significant penalty — likely limited if playing
+        injuryBonus = -0.10;
       } else if (playerInjury.status === 'Day-To-Day') {
-        injuryBonus = -0.06; // Moderate penalty — could be on minutes restriction
+        injuryBonus = -0.06;
       }
-      
-      console.log(`[Scorer] ${projection.playerName} is ${playerInjury.status} (${(injuryBonus * 100).toFixed(0)}% penalty)`);
-    }
-    
-    // Check if player recently returned from injury (recent minutes way below season avg = rust)
-    if (!playerInjuryFlag && matchup.expectedMinutes !== null && matchup.seasonAvgMinutes !== null) {
-      const expectedMin = matchup.expectedMinutes;
-      const seasonMin = matchup.seasonAvgMinutes;
-      if (seasonMin > 0 && expectedMin > 0 && expectedMin < seasonMin * 0.7) {
-        // Player's recent minutes are way below season avg — likely coming back from injury
-        const minutesDrop = (seasonMin - expectedMin) / seasonMin;
-        injuryBonus = -(minutesDrop * 0.08); // Up to -8% penalty for severe minutes drops
-        injuryContext = `⚠️ Possible injury return: recent ${expectedMin.toFixed(1)} min vs season ${seasonMin.toFixed(1)} min (${(minutesDrop * 100).toFixed(0)}% drop)`;
-        console.log(`[Scorer] ${projection.playerName}: ${injuryContext}`);
-      }
+
+      console.log(
+        `[Scorer] ${projection.playerName} is ${playerInjury.status} (${(injuryBonus * 100).toFixed(0)}% penalty)`
+      );
     }
 
-    // Check for teammate injuries that boost this player's usage
-    try {
-      const teamImpact = await getTeamInjuryImpact(projection.team, injuries);
-      
-      if (teamImpact.outPlayers.length > 0) {
-        const usageBoostPercent = teamImpact.usageBoost.get(projection.team) || 0;
-        
-        if (usageBoostPercent > 0) {
-          injuryBonus = usageBoostPercent; // Add usage boost to score
-          
-          const outPlayerNames = teamImpact.outPlayers.map((p) => p.playerName).join(', ');
-          injuryContext = injuryContext 
-            ? `${injuryContext} | Teammates OUT: ${outPlayerNames} → +${(usageBoostPercent * 100).toFixed(0)}% usage`
-            : `Teammates OUT: ${outPlayerNames} → +${(usageBoostPercent * 100).toFixed(0)}% usage boost`;
-          
-          console.log(`[Scorer] ${projection.playerName}: ${injuryContext}`);
+    // Teammate injuries → usage boost
+    if (!playerInjuryFlag) {
+      try {
+        const teamImpact = await getTeamInjuryImpact(projection.team, injuries);
+
+        if (teamImpact.outPlayers.length > 0) {
+          const usageBoostPercent = teamImpact.usageBoost.get(projection.team) || 0;
+
+          if (usageBoostPercent > 0) {
+            injuryBonus = usageBoostPercent;
+
+            const outPlayerNames = teamImpact.outPlayers.map((p) => p.playerName).join(', ');
+            injuryContext = injuryContext
+              ? `${injuryContext} | Teammates OUT: ${outPlayerNames} → +${(usageBoostPercent * 100).toFixed(0)}% usage`
+              : `Teammates OUT: ${outPlayerNames} → +${(usageBoostPercent * 100).toFixed(0)}% usage boost`;
+
+            console.log(`[Scorer] ${projection.playerName}: ${injuryContext}`);
+          }
         }
+      } catch (err) {
+        console.error(
+          `[Scorer] Error calculating injury impact for ${projection.team}:`,
+          err
+        );
       }
-    } catch (err) {
-      console.error(`[Scorer] Error calculating injury impact for ${projection.team}:`, err);
     }
   }
 
-  // ─── Expert Consensus ────────────────────────────────────────────────────
-
+  // ─── Expert consensus ─────────────────────────────────────────────────────
   let expertBonus = 0;
   let expertConsensus: string | undefined;
   let sharpSignal: 'AGREE' | 'DISAGREE' | 'NEUTRAL' = 'NEUTRAL';
 
   try {
-    const consensus = await getConsensusForPick(projection.playerName, projection.statType, projection.line);
-    
+    const consensus = await getConsensusForPick(
+      projection.playerName,
+      projection.statType,
+      projection.line
+    );
+
     if (consensus && consensus.expertPicks.length >= 2) {
-      const ourPickDirection = (baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus) > 0 ? 'OVER' : 'UNDER';
-      const expertAgreePercent = ourPickDirection === 'OVER' ? consensus.overPercent : consensus.underPercent;
-      
-      // Consensus bonus: if 60%+ of experts agree with our pick
+      // Preliminary pick direction from primary edge + injury
+      const prelimDirection =
+        primaryEdge + injuryBonus > 0 ? 'OVER' : 'UNDER';
+
+      const expertAgreePercent =
+        prelimDirection === 'OVER' ? consensus.overPercent : consensus.underPercent;
+
       if (expertAgreePercent >= 60) {
         expertBonus = 0.06;
-        expertConsensus = `${consensus.expertPicks.length} experts: ${expertAgreePercent.toFixed(0)}% agree ${ourPickDirection}`;
+        expertConsensus = `${consensus.expertPicks.length} experts: ${expertAgreePercent.toFixed(0)}% agree ${prelimDirection}`;
       }
-      
-      // Sharp money bonus: if sharp money agrees, add extra edge
-      if (consensus.sharpMoney && consensus.sharpMoney === ourPickDirection) {
+
+      if (consensus.sharpMoney && consensus.sharpMoney === prelimDirection) {
         expertBonus += 0.08;
         sharpSignal = 'AGREE';
-        expertConsensus = expertConsensus 
+        expertConsensus = expertConsensus
           ? `${expertConsensus} | Sharp money agrees ✓`
-          : `Sharp money on ${ourPickDirection}`;
-      } else if (consensus.sharpMoney && consensus.sharpMoney !== ourPickDirection) {
+          : `Sharp money on ${prelimDirection}`;
+      } else if (consensus.sharpMoney && consensus.sharpMoney !== prelimDirection) {
         sharpSignal = 'DISAGREE';
-        expertConsensus = expertConsensus 
+        expertConsensus = expertConsensus
           ? `${expertConsensus} | ⚠️ Sharp money on ${consensus.sharpMoney} (opposite)`
           : `⚠️ Sharp money on ${consensus.sharpMoney} (opposite)`;
       }
 
-      // Line comparison research — adjust trust based on investigation
-      const lc = (consensus as any).lineComparison;
+      // Line comparison research
+      const lc = (consensus as ConsensusData & { lineComparison?: { avgBookLine: number; lineDiff: number; research?: { trustLevel: string; factors: string[] } } }).lineComparison;
       if (lc?.research) {
         const research = lc.research;
         expertConsensus = expertConsensus
@@ -278,40 +361,47 @@ export async function scoreProjection(
           : `PP ${projection.line} vs Books ${lc.avgBookLine} (diff ${lc.lineDiff > 0 ? '+' : ''}${lc.lineDiff})`;
 
         if (research.trustLevel === 'low') {
-          // Research found reasons to distrust the discrepancy — reduce expert bonus
           expertBonus = Math.max(0, expertBonus - 0.04);
           expertConsensus += ` | ⚠️ LOW TRUST: ${research.factors[0]}`;
         } else if (research.trustLevel === 'high') {
           expertBonus += 0.03;
         }
       }
-      
-      console.log(`[Scorer] ${projection.playerName}: Expert consensus = ${expertConsensus || 'neutral'}`);
+
+      console.log(
+        `[Scorer] ${projection.playerName}: Expert consensus = ${expertConsensus || 'neutral'}`
+      );
     }
   } catch (err) {
-    console.error(`[Scorer] Error fetching expert consensus for ${projection.playerName}:`, err);
+    console.error(
+      `[Scorer] Error fetching expert consensus for ${projection.playerName}:`,
+      err
+    );
   }
 
-  // ─── Sharps Intel ──────────────────────────────────────────────────────────
-
+  // ─── Sharps intel ──────────────────────────────────────────────────────────
   let sharpBonus = 0;
   let sharpsContext: string | undefined;
 
   try {
-    const sharpsReport = await getSharpsReport(projection.playerName, projection.statType, projection.line);
+    const sharpsReport: SharpsReport = await getSharpsReport(
+      projection.playerName,
+      projection.statType,
+      projection.line
+    );
 
     if (sharpsReport.signals.length > 0) {
-      // sharpScore ranges -1 to 1; multiply by 0.10 for up to ±10% edge
       sharpBonus = sharpsReport.sharpScore * 0.10;
 
-      const signalSummaries = sharpsReport.signals.map(s =>
-        `${s.source}: ${s.direction} (${(s.confidence * 100).toFixed(0)}%)`
+      const signalSummaries = sharpsReport.signals.map(
+        (s) => `${s.source}: ${s.direction} (${(s.confidence * 100).toFixed(0)}%)`
       );
       sharpsContext = `Sharps [${sharpsReport.overallDirection}]: ${signalSummaries.join(', ')}`;
 
-      // Update sharp signal based on sharps report vs our preliminary direction
-      const prelimDirection = (baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus) > 0 ? 'OVER' : 'UNDER';
-      if (sharpsReport.overallDirection === prelimDirection) {
+      const prelimDirection2 =
+        primaryEdge + injuryBonus + expertBonus > 0 ? 'OVER' : 'UNDER';
+
+      if (sharpsReport.overallDirection === prelimDirection2) {
         sharpSignal = 'AGREE';
       } else if (sharpsReport.overallDirection !== 'NEUTRAL') {
         sharpSignal = 'DISAGREE';
@@ -320,132 +410,166 @@ export async function scoreProjection(
       console.log(`[Scorer] ${projection.playerName}: ${sharpsContext}`);
     }
   } catch (err) {
-    console.error(`[Scorer] Error fetching sharps report for ${projection.playerName}:`, err);
+    console.error(
+      `[Scorer] Error fetching sharps report for ${projection.playerName}:`,
+      err
+    );
   }
 
-  // ─── Historical Hit Rate Adjustment ──────────────────────────────────────
+  // ─── Sharp model projection (Dimers / BettingPros) ────────────────────────
+  let sharpProjection: number | null = null;
+  try {
+    sharpProjection = await getSharpProjection(
+      projection.playerName,
+      projection.statType
+    );
+  } catch {
+    // non-fatal
+  }
 
+  // ─── Historical hit rate ───────────────────────────────────────────────────
   let hitRateAdjustment = 0;
-  const prelimScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus + paceBonus + minutesBonus;
-  const edgeBucket = edgeToBucket(prelimScore);
+  const prelimScoreForBucket =
+    primaryEdge + injuryBonus + expertBonus + sharpBonus;
+  const edgeBucket = edgeToBucket(prelimScoreForBucket);
   const historicalHitRate = getHistoricalHitRate(projection.statType, edgeBucket);
-  
+
   if (historicalHitRate !== null) {
-    // If historical hit rate is significantly below 50%, reduce confidence
-    // Target: 52.38% for profitability at -110 odds
     const targetHitRate = 0.5238;
     const hitRateDiff = historicalHitRate - targetHitRate;
-    
+
     if (hitRateDiff < -0.05) {
-      // Historical underperformance → reduce edge
-      hitRateAdjustment = hitRateDiff * 0.5; // Apply 50% of the deficit
-      
+      hitRateAdjustment = hitRateDiff * 0.5;
       console.log(
-        `[Scorer] ${projection.playerName} ${projection.statType}: Historical hit rate ${(historicalHitRate * 100).toFixed(1)}% ` +
-        `(bucket: ${edgeBucket}) → ${(hitRateAdjustment * 100).toFixed(1)}% penalty`
+        `[Scorer] ${projection.playerName} ${projection.statType}: Historical hit rate ` +
+          `${(historicalHitRate * 100).toFixed(1)}% (${edgeBucket}) → ${(hitRateAdjustment * 100).toFixed(1)}% penalty`
       );
     }
   }
 
-  // ─── Final Score ─────────────────────────────────────────────────────────
+  // ─── Final score ──────────────────────────────────────────────────────────
+  let rawScore =
+    primaryEdge + injuryBonus + expertBonus + sharpBonus + hitRateAdjustment;
 
-  let rawScore = baseEdge + matchupBonus + trendBonus + homeBonus + injuryBonus + expertBonus + sharpBonus + paceBonus + minutesBonus + hitRateAdjustment;
-  
-  // Apply back-to-back penalty to OVERs
+  // Back-to-back penalty applies to OVER picks
   if (backToBackPenalty > 0 && rawScore > 0) {
     rawScore -= backToBackPenalty;
   }
-  
-  // Apply blowout adjustment: penalize OVERs, boost UNDERs
+
+  // Blowout: penalize OVERs, boost UNDERs
   let totalScore = rawScore;
   if (blowoutPenalty > 0) {
     if (rawScore > 0) {
-      totalScore = rawScore - blowoutPenalty; // Penalize OVERs
+      totalScore = rawScore - blowoutPenalty;
     } else {
-      totalScore = rawScore - (blowoutPenalty * 0.6); // Boost UNDERs (push more negative = stronger UNDER)
+      totalScore = rawScore - blowoutPenalty * 0.6;
     }
   }
-  
-  // If player is injured/questionable, reduce confidence (don't penalize score, just flag it)
+
   const pick: 'OVER' | 'UNDER' = totalScore > 0 ? 'OVER' : 'UNDER';
   let confidence = scoreToConfidence(Math.abs(totalScore));
-  
+
   if (playerInjuryFlag) {
-    // Doubtful: -2 stars, Questionable: -2 stars, Day-To-Day: -1 star
     const injStatus = injuries?.find(
       (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
     )?.status;
-    const starPenalty = (injStatus === 'Doubtful' || injStatus === 'Questionable') ? 2 : 1;
+    const starPenalty =
+      injStatus === 'Doubtful' || injStatus === 'Questionable' ? 2 : 1;
     confidence = Math.max(1, confidence - starPenalty);
   }
 
-  // ─── Build Reasoning ─────────────────────────────────────────────────────
-
+  // ─── Build reasoning ──────────────────────────────────────────────────────
   const reasons: string[] = [];
-  
-  if (Math.abs(baseEdge) > 0.02) {
+
+  // Primary edge: Pinnacle and consensus
+  const edgeDescriptions = describeMarketEdge(marketEdge);
+  reasons.push(...edgeDescriptions);
+
+  // If no book data available, note it
+  if (
+    marketEdge.pinnacleLine === null &&
+    marketEdge.draftKingsLine === null &&
+    marketEdge.fanDuelLine === null
+  ) {
+    reasons.push('No book lines available — edge from sharp signals only');
+  }
+
+  // Game environment
+  if (vegasTotal !== null) {
+    if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
+      reasons.push(
+        `Vegas total ${vegasTotal} (high) → scoring OVER boosted`
+      );
+    } else if (vegasTotal < LOW_TOTAL_THRESHOLD) {
+      reasons.push(
+        `Vegas total ${vegasTotal} (low) → scoring UNDER boosted`
+      );
+    } else {
+      reasons.push(`Vegas total ${vegasTotal} (neutral)`);
+    }
+  }
+
+  // Pace adjustment note (context only, no longer primary signal)
+  if (Math.abs(matchup.paceAdjustment) > 0.01) {
+    const paceDir = matchup.paceAdjustment > 0 ? 'Fast' : 'Slow';
     reasons.push(
-      `Model line ${matchup.estimatedLine} (EWMA ${matchup.ewma}) vs PP line ${matchup.prizePicksLine} (${(baseEdge * 100).toFixed(1)}% edge)`
+      `${paceDir} pace game (${(matchup.paceAdjustment * 100).toFixed(1)}%)`
     );
   }
-  
-  if (matchup.matchupGrade === 'A' || matchup.matchupGrade === 'B') {
-    reasons.push(`Favorable matchup (${matchup.matchupGrade}) vs ${matchup.opponent}`);
-  } else if (matchup.matchupGrade === 'D' || matchup.matchupGrade === 'F') {
-    reasons.push(`Tough matchup (${matchup.matchupGrade}) vs ${matchup.opponent}`);
+
+  // Trailing averages — context only, not used in score
+  if (matchup.last3Avg > 0 || matchup.last10Avg > 0) {
+    reasons.push(
+      `Context: L3 ${matchup.last3Avg} | L10 ${matchup.last10Avg} | SZN ${matchup.seasonAvg}`
+    );
   }
-  
-  if (matchup.opponentDefenseRank !== null) {
-    reasons.push(`Opponent defense rank: #${matchup.opponentDefenseRank} in ${projection.statType}`);
-  }
-  
-  if (trendBonus > 0) {
-    reasons.push(`Hot trend: L3 ${matchup.last3Avg} > L10 ${matchup.last10Avg} > SZN ${matchup.seasonAvg}`);
-  } else if (trendBonus < 0) {
-    reasons.push(`Cold trend: L3 ${matchup.last3Avg} < L10 ${matchup.last10Avg} < SZN ${matchup.seasonAvg}`);
-  }
-  
-  if (homeBonus > 0) {
-    reasons.push('Home court advantage');
-  }
-  
-  if (paceBonus !== 0) {
-    const paceDirection = paceBonus > 0 ? 'Fast' : 'Slow';
-    reasons.push(`${paceDirection} pace game (${(matchup.paceAdjustment * 100).toFixed(1)}%)`);
-  }
-  
-  if (minutesBonus !== 0 && matchup.expectedMinutes !== null) {
-    reasons.push(`Expected ${matchup.expectedMinutes} min (season avg: ${matchup.seasonAvgMinutes})`);
-  }
-  
+
+  // Back-to-back
   if (backToBackPenalty > 0) {
-    reasons.push(`⚠️ Back-to-back game → -5% OVER penalty`);
+    reasons.push('⚠️ Back-to-back game → -5% OVER penalty');
   }
-  
+
+  // Blowout
   if (blowoutPenalty > 0) {
     const absSpread = Math.abs(matchup.gameSpread!);
     if (rawScore > 0) {
-      reasons.push(`⚠️ Blowout risk: ${absSpread}pt spread → OVER penalized (-${(blowoutPenalty * 100).toFixed(1)}%)`);
+      reasons.push(
+        `⚠️ Blowout risk: ${absSpread}pt spread → OVER penalized (-${(blowoutPenalty * 100).toFixed(1)}%)`
+      );
     } else {
-      reasons.push(`✅ Blowout boost: ${absSpread}pt spread → UNDER strengthened (+${(blowoutPenalty * 0.6 * 100).toFixed(1)}%)`);
+      reasons.push(
+        `✅ Blowout boost: ${absSpread}pt spread → UNDER strengthened (+${(blowoutPenalty * 0.6 * 100).toFixed(1)}%)`
+      );
     }
   }
-  
+
+  // Historical hit rate
   if (historicalHitRate !== null) {
-    reasons.push(`Historical hit rate (${edgeBucket}): ${(historicalHitRate * 100).toFixed(1)}%`);
-  }
-  
-  if (injuryContext) {
-    reasons.push(injuryContext);
-  }
-  
-  if (expertConsensus) {
-    reasons.push(expertConsensus);
+    reasons.push(
+      `Historical hit rate (${edgeBucket}): ${(historicalHitRate * 100).toFixed(1)}%`
+    );
   }
 
-  if (sharpsContext) {
-    reasons.push(sharpsContext);
+  // Sharp model projection
+  if (sharpProjection !== null) {
+    const note = describeSharpProjection(
+      projection.playerName,
+      projection.statType,
+      sharpProjection,
+      projection.line,
+      pick
+    );
+    reasons.push(note);
   }
+
+  // Injury
+  if (injuryContext) reasons.push(injuryContext);
+
+  // Expert consensus
+  if (expertConsensus) reasons.push(expertConsensus);
+
+  // Sharps
+  if (sharpsContext) reasons.push(sharpsContext);
 
   return {
     projection,
@@ -454,14 +578,24 @@ export async function scoreProjection(
     confidence,
     ev: Math.round(Math.abs(totalScore) * 10000) / 10000,
     totalScore: Math.round(totalScore * 10000) / 10000,
-    reasoning: reasons.join('. ') || 'Marginal edge detected',
+    reasoning: reasons.join('. ') || 'Marginal market edge detected',
     injuryContext,
     playerInjured: playerInjuryFlag,
-    playerInjuryStatus: playerInjuryFlag ? injuries?.find(
-      (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
-    )?.status : undefined,
+    playerInjuryStatus: playerInjuryFlag
+      ? injuries?.find(
+          (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
+        )?.status
+      : undefined,
     expertConsensus,
     sharpSignal,
+    // New Pinnacle-model fields
+    ppLine: projection.line,
+    pinnacleLine: marketEdge.pinnacleLine,
+    consensusLine: marketEdge.consensusLine,
+    pinnacleEdge: marketEdge.pinnacleEdge,
+    consensusEdge: marketEdge.consensusEdge,
+    vegasTotal,
+    sharpProjection,
   };
 }
 
@@ -479,26 +613,25 @@ export function rankProjections(scoredPicks: ScoredPick[]): ScoredPick[] {
 export function buildParlay(topPicks: ScoredPick[]): ParlayPick {
   const ranked = rankProjections(topPicks);
   const selected: ScoredPick[] = [];
-  const usedGames = new Set<string>(); // track by opponent to avoid same-game correlation
+  const usedGames = new Set<string>();
 
   for (const pick of ranked) {
     if (selected.length >= 4) break;
-
-    // Avoid picking multiple players from the same game
     const gameKey = [pick.projection.team, pick.matchup.opponent].sort().join('-');
     if (usedGames.has(gameKey)) continue;
-
     selected.push(pick);
     usedGames.add(gameKey);
   }
 
-  const combinedConfidence = selected.length > 0
-    ? Math.round(selected.reduce((s, p) => s + p.confidence, 0) / selected.length)
-    : 0;
+  const combinedConfidence =
+    selected.length > 0
+      ? Math.round(selected.reduce((s, p) => s + p.confidence, 0) / selected.length)
+      : 0;
 
-  const correlationNote = selected.length < 4
-    ? `Only ${selected.length} uncorrelated picks available`
-    : 'All picks from different games for max independence';
+  const correlationNote =
+    selected.length < 4
+      ? `Only ${selected.length} uncorrelated picks available`
+      : 'All picks from different games for max independence';
 
   return {
     picks: selected,
@@ -546,12 +679,8 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
   insertAll(picks);
 }
 
-// ─── Historical Hit Rate Tracking ────────────────────────────────────────────
+// ─── Historical Hit Rate Tracking ─────────────────────────────────────────────
 
-/**
- * Convert edge to bucket for hit rate tracking.
- * Buckets: "low" (0-5%), "medium" (5-10%), "high" (10-15%), "very_high" (15%+)
- */
 function edgeToBucket(edge: number): string {
   const absEdge = Math.abs(edge);
   if (absEdge >= 0.15) return 'very_high';
@@ -560,10 +689,6 @@ function edgeToBucket(edge: number): string {
   return 'low';
 }
 
-/**
- * Record the result of a pick after the game completes.
- * Call this function after scraping actual results.
- */
 export function recordPickResult(
   date: string,
   playerName: string,
@@ -575,55 +700,42 @@ export function recordPickResult(
   hit: boolean
 ): void {
   const db = getDatabase();
-  const edgeBucket = edgeToBucket(edge);
-  
+  const edgeBucketVal = edgeToBucket(edge);
+
   db.prepare(`
     INSERT INTO pick_results 
     (date, player_name, stat_type, pick_direction, edge_bucket, hit, line, actual_result)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    date,
-    playerName,
-    statType,
-    pickDirection,
-    edgeBucket,
-    hit ? 1 : 0,
-    line,
-    actualResult
-  );
-  
+  `).run(date, playerName, statType, pickDirection, edgeBucketVal, hit ? 1 : 0, line, actualResult);
+
   console.log(
     `[Hit Rate] Recorded ${playerName} ${statType} ${pickDirection}: ` +
-    `${actualResult} vs ${line} = ${hit ? 'HIT' : 'MISS'} (edge bucket: ${edgeBucket})`
+      `${actualResult} vs ${line} = ${hit ? 'HIT' : 'MISS'} (edge bucket: ${edgeBucketVal})`
   );
 }
 
-/**
- * Get historical hit rate for a stat type + edge bucket.
- * Returns null if insufficient data (<10 samples).
- */
 export function getHistoricalHitRate(
   statType: string,
   edgeBucket: string
 ): number | null {
   const db = getDatabase();
-  
-  const result = db.prepare(`
-    SELECT 
-      COUNT(*) as total,
-      SUM(hit) as hits
+
+  const result = db
+    .prepare(
+      `
+    SELECT COUNT(*) as total, SUM(hit) as hits
     FROM pick_results
     WHERE stat_type = ? AND edge_bucket = ?
-  `).get(statType, edgeBucket) as { total: number; hits: number } | undefined;
-  
-  if (!result || result.total < 10) {
-    return null; // Need at least 10 samples for reliable rate
-  }
-  
+  `
+    )
+    .get(statType, edgeBucket) as { total: number; hits: number } | undefined;
+
+  if (!result || result.total < 10) return null;
+
   const hitRate = result.hits / result.total;
   console.log(
     `[Hit Rate] ${statType} ${edgeBucket}: ${result.hits}/${result.total} = ${(hitRate * 100).toFixed(1)}%`
   );
-  
+
   return hitRate;
 }

@@ -25,6 +25,7 @@ const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 let playerPropsCache: { data: BookLine[]; timestamp: number } | null = null;
 let spreadsCache: { data: Map<string, number>; timestamp: number } | null = null;
 let pinnacleCache: { data: BookLine[]; timestamp: number } | null = null;
+let totalsCache: { data: Map<string, number>; timestamp: number } | null = null;
 
 // ─── The Odds API Stat Type Mapping ──────────────────────────────────────────
 
@@ -358,4 +359,66 @@ export async function fetchGameSpreads(): Promise<Map<string, number>> {
 
   spreadsCache = { data: spreads, timestamp: Date.now() };
   return spreads;
+}
+
+/**
+ * Fetch Vegas over/under game totals for blowout detection and game-environment scoring.
+ * Returns Map<"Team1 vs Team2", total> — home_team vs away_team format.
+ * Cached for 30 minutes like spreads.
+ */
+export async function fetchGameTotals(): Promise<Map<string, number>> {
+  if (totalsCache && Date.now() - totalsCache.timestamp < CACHE_TTL) {
+    return totalsCache.data;
+  }
+
+  const totals = new Map<string, number>();
+
+  const theOddsKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsKey) {
+    console.log('[Odds] No THE_ODDS_API_KEY — cannot fetch game totals');
+    totalsCache = { data: totals, timestamp: Date.now() };
+    return totals;
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.the-odds-api.com/v4/sports/basketball_nba/odds` +
+        `?apiKey=${theOddsKey}&regions=us&markets=totals&bookmakers=draftkings,pinnacle`
+    );
+
+    if (res.ok) {
+      const data = (await res.json()) as any[];
+      for (const event of data) {
+        const gameKey = `${event.home_team} vs ${event.away_team}`;
+        let foundTotal = false;
+
+        for (const bookmaker of event.bookmakers || []) {
+          if (foundTotal) break;
+          for (const market of bookmaker.markets || []) {
+            if (market.key !== 'totals') continue;
+            for (const outcome of market.outcomes || []) {
+              if (outcome.name === 'Over' && outcome.point != null) {
+                totals.set(gameKey, outcome.point);
+                foundTotal = true;
+                break;
+              }
+            }
+            if (foundTotal) break;
+          }
+        }
+      }
+      console.log(`[Odds] Fetched ${totals.size} game totals`);
+
+      // Log remaining credits
+      const remaining = res.headers.get('x-requests-remaining');
+      if (remaining) console.log(`[OddsAPI] Credits remaining: ${remaining}`);
+    } else {
+      console.log(`[Odds] Totals HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[Odds] Totals error:', err instanceof Error ? err.message : err);
+  }
+
+  totalsCache = { data: totals, timestamp: Date.now() };
+  return totals;
 }

@@ -104,8 +104,11 @@ initializeDatabase({ path: './data/fund.db' });
 - [ ] `Games today:` count > 0
 - [ ] At least SOME spreads are non-null (if all null, note it in report)
 - [ ] Top picks JSON has non-zero `totalScore`, `ev`, and `confidence` values
-- [ ] `estimatedLine` values are reasonable (not 0.00 for major stat types)
-- [ ] `matchup.last5Avg` and `last10Avg` are non-zero for the top picks
+- [ ] `matchup.last5Avg` and `last10Avg` are non-zero for the top picks (context — not used in score)
+- [ ] **Pinnacle line data:** At least some top picks have non-null `pinnacleLine` (not ALL null — if ALL null, THE_ODDS_API_KEY may be missing or Pinnacle not available for these games; note explicitly)
+- [ ] **consensusLine** present for top picks when DK/FD lines are available
+- [ ] **vegasTotal** is non-null for at least some games (confirms fetchGameTotals is working)
+- [ ] `pinnacleEdge` and `consensusEdge` are non-zero for picks with Pinnacle data
 
 **If any check fails:** Debug the pipeline. Read error messages. Try fetching individual player stats. Fix the issue. Do NOT proceed with broken data.
 
@@ -159,14 +162,15 @@ Format as a Telegram message:
 
 For each pick:
 **1. [Player] — [Stat] [OVER/UNDER] [Line]**
-• Model line: [X.X] vs PP line: [Y.Y] → Edge: [+Z%]
-• L3: [X] | L5: [X] | L10: [X] | Season: [X]
-• Matchup grade: [A-F] vs [opponent] 
-• Trend: 🔥 hot / 🧊 cold / ➡️ steady
+• Pinnacle: [X.X] vs PP [Y.Y] → [+Z%] edge
+• Book consensus: DK [X] / FD [X] / Pinnacle [X] = avg [X] vs PP [Y]
+• Vegas total: [X] ([high/low/neutral]) → [scoring OVER/UNDER boosted or N/A]
+• Sharp model: Dimers/BettingPros project [X] ([agrees/conflicts with OVER/UNDER])
+• L3: [X] | L10: [X] | SZN: [X]  ← context only, not used in score
 • 📈 Sharp signal: ✅/⚠️/❓
 • ⚠️ Blowout risk: [spread]pt spread → [penalty or "no penalty"]
 • Confidence: ⭐⭐⭐⭐⭐
-• Why: [1-2 sentences]
+• Why: [1-2 sentences of primary edge logic]
 
 **🔒 LOCK picks** = model edge + sharp alignment + line divergence all agree
 
@@ -194,9 +198,11 @@ DO NOT use the message tool. Just include the report in your reply text — it w
 
 ## FINAL QUALITY CHECK
 Before sending, verify:
-- [ ] Every pick has non-zero stats (L3, L5, L10, season averages)
+- [ ] Every pick has Pinnacle edge shown (or "Pinnacle N/A" if no data — explain why)
 - [ ] Blowout penalty section present for each pick (even if "no blowout risk")
+- [ ] Vegas total shown for each game (or "Vegas total unavailable" — note it)
 - [ ] At least some spreads shown in the games section
-- [ ] Reasoning is specific (not generic "marginal edge detected")
+- [ ] Reasoning is specific — must reference Pinnacle line if available
+- [ ] Trailing averages shown as CONTEXT only (not primary reasoning)
 - [ ] Parlay picks are from different games
 - [ ] Report saved to memory file
