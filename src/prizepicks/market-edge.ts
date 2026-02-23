@@ -6,7 +6,7 @@
  * that's a real market mispricing.
  */
 
-import { fetchPlayerProps, fetchPinnacleLines, type BookLine } from './odds-service';
+import { fetchPlayerProps, fetchPinnacleLines, fetchTeamTotals, type BookLine } from './odds-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +34,8 @@ export interface MarketEdge {
    * Negative = consensus is LOWER than PP → UNDER edge
    */
   consensusEdge: number;
+  /** Vegas expected scoring total for this player's team (from team_totals market) */
+  teamTotal: number | null;
 }
 
 // ─── Stat type mapping ───────────────────────────────────────────────────────
@@ -72,6 +74,29 @@ function namesMatch(a: string, b: string): boolean {
 }
 
 /**
+ * Find team total for a given team from the team totals map.
+ * Uses fuzzy matching (last word of team name) to handle short vs full names.
+ */
+function findTeamTotal(totals: Map<string, number>, team: string): number | null {
+  if (totals.size === 0 || !team) return null;
+  const teamLc = team.toLowerCase().trim();
+
+  for (const [teamName, total] of totals) {
+    const nameLc = teamName.toLowerCase().trim();
+    // Exact match
+    if (nameLc === teamLc) return total;
+    // One contains the other (e.g., "Lakers" in "Los Angeles Lakers")
+    if (nameLc.includes(teamLc) || teamLc.includes(nameLc)) return total;
+    // Last word match (city abbreviation → "Lakers", "Warriors", etc.)
+    const nameLastWord = nameLc.split(' ').pop() ?? '';
+    const teamLastWord = teamLc.split(' ').pop() ?? '';
+    if (nameLastWord && teamLastWord && nameLastWord === teamLastWord) return total;
+  }
+
+  return null;
+}
+
+/**
  * Find a specific book's line for a player/stat from a list of BookLines.
  * Returns null if no matching entry found.
  */
@@ -101,20 +126,27 @@ function findBookLine(
  *
  * Fetches lines from all books via fetchPlayerProps() and fetchPinnacleLines(),
  * computes Pinnacle edge and book consensus edge.
+ *
+ * @param team - Optional team name to look up team totals (e.g. "Lakers", "Los Angeles Lakers")
  */
 export async function getMarketEdge(
   playerName: string,
   statType: string,
-  ppLine: number
+  ppLine: number,
+  team?: string
 ): Promise<MarketEdge> {
-  const [allLines, pinnacleLines] = await Promise.all([
+  const [allLines, pinnacleLines, teamTotalsMap] = await Promise.all([
     fetchPlayerProps().catch((): BookLine[] => []),
     fetchPinnacleLines().catch((): BookLine[] => []),
+    fetchTeamTotals().catch((): Map<string, number> => new Map()),
   ]);
 
   const draftKingsLine = findBookLine(allLines, playerName, statType, 'DraftKings');
   const fanDuelLine = findBookLine(allLines, playerName, statType, 'FanDuel');
   const pinnacleLine = findBookLine(pinnacleLines, playerName, statType);
+
+  // Team total lookup
+  const teamTotal = team ? findTeamTotal(teamTotalsMap, team) : null;
 
   // Consensus = average of available: DK, FD, Pinnacle
   const components: number[] = [];
@@ -141,7 +173,8 @@ export async function getMarketEdge(
     `[MarketEdge] ${playerName} ${statType}: PP ${ppLine} | ` +
       `Pinnacle ${pinnacleLine ?? 'N/A'} (${(pinnacleEdge * 100).toFixed(1)}%) | ` +
       `DK ${draftKingsLine ?? 'N/A'} | FD ${fanDuelLine ?? 'N/A'} | ` +
-      `Consensus ${consensusLine ?? 'N/A'} (${(consensusEdge * 100).toFixed(1)}%)`
+      `Consensus ${consensusLine ?? 'N/A'} (${(consensusEdge * 100).toFixed(1)}%) | ` +
+      `Team Total ${teamTotal ?? 'N/A'}`
   );
 
   return {
@@ -154,6 +187,7 @@ export async function getMarketEdge(
     consensusLine,
     pinnacleEdge,
     consensusEdge,
+    teamTotal,
   };
 }
 

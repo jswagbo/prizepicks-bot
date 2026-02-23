@@ -37,9 +37,15 @@ PRIMARY EDGE = Pinnacle divergence × 0.5
 
 Pinnacle divergence  = (Pinnacle line − PP line) / PP line
 Consensus divergence = (avg(DK + FD + Pinnacle) − PP line) / PP line
-Game environment     = Vegas total > 228 → +2% (high scoring OVER boost)
-                       Vegas total < 215 → −2% (low scoring UNDER boost)
+Game environment     = Team total > 115 → +2% (high team scoring OVER boost)   ← preferred
+                       Team total < 105 → −2% (low team scoring UNDER boost)    ← preferred
+                       Vegas total > 228 → +2% (fallback when team total unavailable)
+                       Vegas total < 215 → −2% (fallback when team total unavailable)
                        Team pace factor (from NBA.com) added at 25% weight
+
+Team total uses the-odds-api `team_totals` market, which assigns an independent
+over/under to each team (not the combined game total). This is more precise because
+a fast team facing a slow team can have a 120 team total even in a 225-total game.
 ```
 
 ### Adjustments (additive)
@@ -80,7 +86,7 @@ Injured players lose 1 star (Day-To-Day) or 2 stars (Questionable/Doubtful) and 
 |--------|------|-----------------|
 | [PrizePicks API](https://api.prizepicks.com) | None (free) | Live projections and lines |
 | [nba_api](https://github.com/swar/nba_api) (Python) | None (free) | Player game logs, team stats, pace ratings |
-| [The Odds API](https://the-odds-api.com) | API key (free tier) | DraftKings + FanDuel + Pinnacle lines + game totals |
+| [The Odds API](https://the-odds-api.com) | API key (free tier) | DraftKings + FanDuel + Pinnacle lines + game totals + team totals. Player prop markets: Points, Rebounds, Assists, 3-PT Made, Blocked Shots, Steals, Turnovers, Pts+Rebs+Asts, Pts+Rebs, Pts+Asts, Rebs+Asts, Blks+Stls, Double Double, First Basket |
 | [ESPN](https://www.espn.com) | None (scraped) | Injury reports, game logs (fallback) |
 | [NBA.com](https://stats.nba.com) | None | Live pace ratings per team |
 | [Covers.com](https://www.covers.com) | None (scraped) | Expert prop picks |

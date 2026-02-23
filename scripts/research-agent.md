@@ -109,6 +109,8 @@ initializeDatabase({ path: './data/fund.db' });
 - [ ] **consensusLine** present for top picks when DK/FD lines are available
 - [ ] **vegasTotal** is non-null for at least some games (confirms fetchGameTotals is working)
 - [ ] `pinnacleEdge` and `consensusEdge` are non-zero for picks with Pinnacle data
+- [ ] **Combo stat markets:** At least some picks have combo stats (Pts+Rebs, Rebs+Asts, Blks+Stls, etc.) with non-null Pinnacle lines — if ALL combo stats show null Pinnacle, the extended market list may not be loading
+- [ ] **Team totals loaded:** At least some picks show `Team total: X.X` in reasoning (not just `Vegas total`) — confirms `fetchTeamTotals()` is working; if all show `Vegas total` fallback, check THE_ODDS_API_KEY and team_totals market availability
 
 **If any check fails:** Debug the pipeline. Read error messages. Try fetching individual player stats. Fix the issue. Do NOT proceed with broken data.
 

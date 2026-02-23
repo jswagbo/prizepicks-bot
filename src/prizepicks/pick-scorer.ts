@@ -77,6 +77,14 @@ const HIGH_TOTAL_THRESHOLD = 228;
 const LOW_TOTAL_THRESHOLD = 215;
 const GAME_ENV_BASE_ADJ = 0.02;
 
+/**
+ * Team total thresholds (single-team expected scoring).
+ * More precise than game total / 2 because pace asymmetry between teams
+ * means a fast team can have a 120 total even in a 225-point projected game.
+ */
+const TEAM_HIGH_TOTAL_THRESHOLD = 115;
+const TEAM_LOW_TOTAL_THRESHOLD = 105;
+
 // ─── Confidence Mapping ───────────────────────────────────────────────────────
 
 function scoreToConfidence(absScore: number): number {
@@ -174,10 +182,29 @@ export async function scoreProjection(
   matchup: MatchupAnalysis,
   injuries?: InjuryReport[]
 ): Promise<ScoredPick> {
-  // ─── Fetch spreads and totals in parallel ──────────────────────────────────
-  const [spreads, totals] = await Promise.all([
+  // ─── Fetch spreads, totals, and market edge in parallel ───────────────────
+  const defaultMarketEdge: MarketEdge = {
+    playerName: projection.playerName,
+    statType: projection.statType,
+    ppLine: projection.line,
+    pinnacleLine: null,
+    draftKingsLine: null,
+    fanDuelLine: null,
+    consensusLine: null,
+    pinnacleEdge: 0,
+    consensusEdge: 0,
+    teamTotal: null,
+  };
+
+  const [spreads, totals, marketEdge] = await Promise.all([
     fetchGameSpreads().catch((): Map<string, number> => new Map()),
     fetchGameTotals().catch((): Map<string, number> => new Map()),
+    getMarketEdge(
+      projection.playerName,
+      projection.statType,
+      projection.line,
+      projection.team
+    ).catch((): MarketEdge => defaultMarketEdge),
   ]);
 
   // Auto-fill game spread if not already set in matchup
@@ -197,11 +224,22 @@ export async function scoreProjection(
   const vegasTotal = findVegasTotal(totals, projection.team, matchup.opponent);
   let gameEnvAdj = 0;
 
-  if (vegasTotal !== null && isScoringRelatedStat(projection.statType)) {
-    if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
-      gameEnvAdj = GAME_ENV_BASE_ADJ; // High-scoring game → OVER boost
-    } else if (vegasTotal < LOW_TOTAL_THRESHOLD) {
-      gameEnvAdj = -GAME_ENV_BASE_ADJ; // Low-scoring game → UNDER boost
+  if (isScoringRelatedStat(projection.statType)) {
+    // Team total (specific to this player's team) is more precise than game total / 2
+    // because pace asymmetry means a fast team can project 120 in a 225-total game
+    if (marketEdge.teamTotal !== null) {
+      if (marketEdge.teamTotal > TEAM_HIGH_TOTAL_THRESHOLD) {
+        gameEnvAdj = GAME_ENV_BASE_ADJ; // High team scoring expected → OVER boost
+      } else if (marketEdge.teamTotal < TEAM_LOW_TOTAL_THRESHOLD) {
+        gameEnvAdj = -GAME_ENV_BASE_ADJ; // Low team scoring expected → UNDER boost
+      }
+    } else if (vegasTotal !== null) {
+      // Fallback: use combined game total when team total is unavailable
+      if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
+        gameEnvAdj = GAME_ENV_BASE_ADJ; // High-scoring game → OVER boost
+      } else if (vegasTotal < LOW_TOTAL_THRESHOLD) {
+        gameEnvAdj = -GAME_ENV_BASE_ADJ; // Low-scoring game → UNDER boost
+      }
     }
   }
 
@@ -209,28 +247,6 @@ export async function scoreProjection(
   // Pace is a known input, so we add a conservative portion (25%)
   if (matchup.paceAdjustment !== 0) {
     gameEnvAdj += matchup.paceAdjustment * 0.25;
-  }
-
-  // ─── Multi-book market edge (Pinnacle primary signal) ────────────────────
-  let marketEdge: MarketEdge;
-  try {
-    marketEdge = await getMarketEdge(
-      projection.playerName,
-      projection.statType,
-      projection.line
-    );
-  } catch {
-    marketEdge = {
-      playerName: projection.playerName,
-      statType: projection.statType,
-      ppLine: projection.line,
-      pinnacleLine: null,
-      draftKingsLine: null,
-      fanDuelLine: null,
-      consensusLine: null,
-      pinnacleEdge: 0,
-      consensusEdge: 0,
-    };
   }
 
   // ─── PRIMARY EDGE ─────────────────────────────────────────────────────────
@@ -494,8 +510,23 @@ export async function scoreProjection(
     reasons.push('No book lines available — edge from sharp signals only');
   }
 
-  // Game environment
-  if (vegasTotal !== null) {
+  // Game environment — team total takes priority when available
+  if (marketEdge.teamTotal !== null) {
+    if (marketEdge.teamTotal > TEAM_HIGH_TOTAL_THRESHOLD) {
+      reasons.push(
+        `Team total: ${marketEdge.teamTotal} (high) → scoring OVER boosted`
+      );
+    } else if (marketEdge.teamTotal < TEAM_LOW_TOTAL_THRESHOLD) {
+      reasons.push(
+        `Team total: ${marketEdge.teamTotal} (low) → scoring UNDER boosted`
+      );
+    } else {
+      reasons.push(`Team total: ${marketEdge.teamTotal} (neutral)`);
+    }
+    if (vegasTotal !== null) {
+      reasons.push(`Vegas game total: ${vegasTotal}`);
+    }
+  } else if (vegasTotal !== null) {
     if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
       reasons.push(
         `Vegas total ${vegasTotal} (high) → scoring OVER boosted`

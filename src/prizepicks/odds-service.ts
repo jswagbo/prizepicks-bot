@@ -26,6 +26,7 @@ let playerPropsCache: { data: BookLine[]; timestamp: number } | null = null;
 let spreadsCache: { data: Map<string, number>; timestamp: number } | null = null;
 let pinnacleCache: { data: BookLine[]; timestamp: number } | null = null;
 let totalsCache: { data: Map<string, number>; timestamp: number } | null = null;
+let teamTotalsCache: { data: Map<string, number>; timestamp: number } | null = null;
 
 // ─── The Odds API Stat Type Mapping ──────────────────────────────────────────
 
@@ -42,9 +43,26 @@ const ODDS_API_MARKET_MAP: Record<string, string> = {
   'player_points_assists': 'Pts+Asts',
   'player_rebounds_assists': 'Rebs+Asts',
   'player_blocks_steals': 'Blks+Stls',
+  'player_double_double': 'Double Double',
+  'player_first_basket': 'First Basket',
 };
 
-const PLAYER_PROP_MARKETS = 'player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals,player_turnovers';
+const PLAYER_PROP_MARKETS = [
+  'player_points',
+  'player_rebounds',
+  'player_assists',
+  'player_threes',
+  'player_blocks',
+  'player_steals',
+  'player_turnovers',
+  'player_points_rebounds_assists',
+  'player_points_rebounds',
+  'player_points_assists',
+  'player_rebounds_assists',
+  'player_blocks_steals',
+  'player_double_double',
+  'player_first_basket',
+].join(',');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -421,4 +439,66 @@ export async function fetchGameTotals(): Promise<Map<string, number>> {
 
   totalsCache = { data: totals, timestamp: Date.now() };
   return totals;
+}
+
+/**
+ * Fetch team-specific over/under totals from The Odds API.
+ * Returns Map<teamName, expectedTotal> — e.g. "Los Angeles Lakers" → 118.5
+ * Cached for 30 minutes like other functions.
+ *
+ * More precise than game total / 2 because it accounts for pace asymmetry
+ * between teams (fast team vs slow team = different team totals even if
+ * the combined game total is the same).
+ */
+export async function fetchTeamTotals(): Promise<Map<string, number>> {
+  if (teamTotalsCache && Date.now() - teamTotalsCache.timestamp < CACHE_TTL) {
+    return teamTotalsCache.data;
+  }
+
+  const teamTotals = new Map<string, number>();
+
+  const theOddsKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsKey) {
+    console.log('[Odds] No THE_ODDS_API_KEY — cannot fetch team totals');
+    teamTotalsCache = { data: teamTotals, timestamp: Date.now() };
+    return teamTotals;
+  }
+
+  try {
+    const res = await fetch(
+      `https://api.the-odds-api.com/v4/sports/basketball_nba/odds` +
+        `?apiKey=${theOddsKey}&regions=us&markets=team_totals&bookmakers=draftkings,pinnacle`
+    );
+
+    if (res.ok) {
+      const data = (await res.json()) as any[];
+      for (const event of data) {
+        for (const bookmaker of event.bookmakers || []) {
+          for (const market of bookmaker.markets || []) {
+            if (market.key !== 'team_totals') continue;
+            for (const outcome of market.outcomes || []) {
+              // team_totals: outcome.name = "Over"/"Under", outcome.description = team name
+              if (outcome.name === 'Over' && outcome.description && outcome.point != null) {
+                if (!teamTotals.has(outcome.description)) {
+                  teamTotals.set(outcome.description, outcome.point);
+                }
+              }
+            }
+          }
+          break; // Only first bookmaker per event
+        }
+      }
+      console.log(`[Odds] Fetched ${teamTotals.size} team totals`);
+
+      const remaining = res.headers.get('x-requests-remaining');
+      if (remaining) console.log(`[OddsAPI] Credits remaining: ${remaining}`);
+    } else {
+      console.log(`[Odds] Team totals HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[Odds] Team totals error:', err instanceof Error ? err.message : err);
+  }
+
+  teamTotalsCache = { data: teamTotals, timestamp: Date.now() };
+  return teamTotals;
 }
