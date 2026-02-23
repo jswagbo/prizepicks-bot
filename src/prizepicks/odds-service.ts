@@ -465,19 +465,46 @@ export async function fetchTeamTotals(): Promise<Map<string, number>> {
   }
 
   try {
-    const res = await fetch(
-      `https://api.the-odds-api.com/v4/sports/basketball_nba/odds` +
-        `?apiKey=${theOddsKey}&regions=us&markets=team_totals&bookmakers=draftkings,pinnacle`
+    // team_totals requires the per-event endpoint, not the bulk /odds endpoint (returns 422)
+    console.log('[Odds] Fetching events for team totals...');
+    const eventsRes = await fetch(
+      `https://api.the-odds-api.com/v4/sports/basketball_nba/events?apiKey=${theOddsKey}`
     );
+    if (!eventsRes.ok) {
+      console.log(`[Odds] Team totals events HTTP ${eventsRes.status}`);
+      teamTotalsCache = { data: teamTotals, timestamp: Date.now() };
+      return teamTotals;
+    }
 
-    if (res.ok) {
-      const data = (await res.json()) as any[];
-      for (const event of data) {
-        for (const bookmaker of event.bookmakers || []) {
+    const events = await eventsRes.json() as TheOddsApiEvent[];
+    const now = Date.now();
+    const cutoff = now + 18 * 60 * 60 * 1000;
+    const todayEvents = events.filter(e => {
+      const t = new Date(e.commence_time).getTime();
+      return t >= now - 2 * 60 * 60 * 1000 && t <= cutoff;
+    });
+
+    console.log(`[Odds] Fetching team totals for ${todayEvents.length} events...`);
+
+    for (const event of todayEvents) {
+      try {
+        const res = await fetch(
+          `https://api.the-odds-api.com/v4/sports/basketball_nba/events/${event.id}/odds` +
+            `?apiKey=${theOddsKey}&regions=us&markets=team_totals&bookmakers=draftkings,pinnacle`
+        );
+        if (!res.ok) {
+          console.log(`[Odds] Team totals event ${event.id} HTTP ${res.status}`);
+          continue;
+        }
+
+        const remaining = res.headers.get('x-requests-remaining');
+        if (remaining) console.log(`[OddsAPI] Credits remaining: ${remaining}`);
+
+        const oddsData = await res.json() as any;
+        for (const bookmaker of oddsData.bookmakers || []) {
           for (const market of bookmaker.markets || []) {
             if (market.key !== 'team_totals') continue;
             for (const outcome of market.outcomes || []) {
-              // team_totals: outcome.name = "Over"/"Under", outcome.description = team name
               if (outcome.name === 'Over' && outcome.description && outcome.point != null) {
                 if (!teamTotals.has(outcome.description)) {
                   teamTotals.set(outcome.description, outcome.point);
@@ -487,14 +514,14 @@ export async function fetchTeamTotals(): Promise<Map<string, number>> {
           }
           break; // Only first bookmaker per event
         }
-      }
-      console.log(`[Odds] Fetched ${teamTotals.size} team totals`);
 
-      const remaining = res.headers.get('x-requests-remaining');
-      if (remaining) console.log(`[OddsAPI] Credits remaining: ${remaining}`);
-    } else {
-      console.log(`[Odds] Team totals HTTP ${res.status}`);
+        await new Promise(r => setTimeout(r, 200));
+      } catch (err) {
+        console.log(`[Odds] Team totals event ${event.id} error:`, err instanceof Error ? err.message : err);
+      }
     }
+
+    console.log(`[Odds] Fetched ${teamTotals.size} team totals`);
   } catch (err) {
     console.error('[Odds] Team totals error:', err instanceof Error ? err.message : err);
   }

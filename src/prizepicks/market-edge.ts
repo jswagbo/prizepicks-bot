@@ -68,9 +68,18 @@ function namesMatch(a: string, b: string): boolean {
   const aParts = aClean.split(/\s+/);
   const bParts = bClean.split(/\s+/);
   if (aParts.length < 2 || bParts.length < 2) return false;
+  // Last names must match exactly
   if (aParts[aParts.length - 1] !== bParts[bParts.length - 1]) return false;
-  if (aParts[0][0] !== bParts[0][0]) return false;
-  return true;
+  // First names must share at least 3 chars (not just initial)
+  // This prevents "Kyshawn George" matching "Keyonte George"
+  const aFirst = aParts[0];
+  const bFirst = bParts[0];
+  const minLen = Math.min(aFirst.length, bFirst.length);
+  if (minLen >= 3) {
+    return aFirst.slice(0, 3) === bFirst.slice(0, 3);
+  }
+  // Short first names: must match fully
+  return aFirst === bFirst;
 }
 
 /**

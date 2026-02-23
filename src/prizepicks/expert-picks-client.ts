@@ -102,10 +102,15 @@ function namesMatch(a: string, b: string): boolean {
 
   // Last names must match exactly
   if (aParts[aParts.length - 1] !== bParts[bParts.length - 1]) return false;
-  // First initial must match
-  if (aParts[0][0] !== bParts[0][0]) return false;
-
-  return true;
+  // First names must share at least 3 chars (not just initial)
+  // Prevents "Kyshawn George" matching "Keyonte George"
+  const aFirst = aParts[0];
+  const bFirst = bParts[0];
+  const minLen = Math.min(aFirst.length, bFirst.length);
+  if (minLen >= 3) {
+    return aFirst.slice(0, 3) === bFirst.slice(0, 3);
+  }
+  return aFirst === bFirst;
 }
 
 // ─── Core: Fetch Player Props from Books ─────────────────────────────────────
