@@ -114,17 +114,7 @@ initializeDatabase({ path: './data/fund.db' });
 
 **If any check fails:** Debug the pipeline. Read error messages. Try fetching individual player stats. Fix the issue. Do NOT proceed with broken data.
 
-## Step 2: Line Divergence Analysis
-
-Run the line comparison script to find PrizePicks lines that diverge from DraftKings/FanDuel consensus:
-
-```bash
-cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export THE_ODDS_API_KEY && python3 /Users/jeffnwagbo/clawd/scripts/prizepicks-line-compare.py 2>&1
-```
-
-This compares PrizePicks prop lines against sportsbook consensus. Large divergences = market mispricing = highest confidence picks.
-
-## Step 3: Sharp Money & Capper Intelligence
+## Step 2: Sharp Money & Capper Intelligence
 
 Search the web for sharp betting intel on today's games:
 
@@ -144,14 +134,14 @@ For each top 10 pick, note:
 - **Line movement:** opened X → now Y, or no movement
 - **Capper consensus:** how many cappers on this side
 
-## Step 4: Deep Research on Top Picks
+## Step 3: Deep Research on Top Picks
 
 For the top 10 picks:
 1. **Injury check** — "[player] injury status today"
 2. **Expert consensus** — "prizepicks [player] [stat] best picks today"
 3. **News** — trades, coaching changes, rest days, back-to-backs
 
-## Step 5: Build the Report
+## Step 4: Build the Report
 
 Format as a Telegram message:
 
@@ -167,7 +157,7 @@ For each pick:
 • Pinnacle: [X.X] vs PP [Y.Y] → [+Z%] edge
 • Book consensus: DK [X] / FD [X] / Pinnacle [X] = avg [X] vs PP [Y]
 • Vegas total: [X] ([high/low/neutral]) → [scoring OVER/UNDER boosted or N/A]
-• Sharp model: Dimers/BettingPros project [X] ([agrees/conflicts with OVER/UNDER])
+• Dimers projection: [X] ([agrees/conflicts with OVER/UNDER])
 • Raw score: [totalScore] | EV: [ev]
 • 📈 Sharp signal: ✅/⚠️/❓
 • ⚠️ Blowout risk: [spread]pt spread → [penalty or "no penalty"]
@@ -187,14 +177,14 @@ PARLAY RULES:
 **⚠️ Trap Picks:**
 [2-3 picks that look good but sharps/data say avoid]
 
-**📊 Line Divergences Found:**
-[All divergences from Step 2, sorted by % difference]
+**📊 Top Line Divergences:**
+[Top 10 picks sorted by absolute book consensus edge % — these come from the market-edge data in Step 1, not a separate script]
 
-## Step 6: Save Report
+## Step 5: Save Report
 
 Save the full report to `/Users/jeffnwagbo/clawd/memory/prizepicks-report-[YYYY-MM-DD].md`
 
-## Step 7: Deliver
+## Step 6: Deliver
 
 DO NOT use the message tool. Just include the report in your reply text — it will be delivered automatically via the announce mechanism.
 
