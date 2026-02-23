@@ -219,6 +219,33 @@ export async function fetchTeamPace(): Promise<{ pace: Record<string, number>; l
 }
 
 /**
+ * Map PrizePicks team abbreviations → internal abbreviations (NBA_TEAM_ABBREV values).
+ * PrizePicks uses different short codes than our NBA.com pace data / game list for some teams.
+ *
+ * Use normalizePPTeamAbbrev() everywhere you go from a PP projection to internal data.
+ */
+export const PP_TO_INTERNAL_ABBREV: Record<string, string> = {
+  'SAS': 'SA',    // San Antonio Spurs: PP=SAS, internal=SA
+  'NYK': 'NY',    // New York Knicks: PP=NYK, internal=NY
+  'UTA': 'UTAH',  // Utah Jazz: PP=UTA, internal=UTAH
+  'WAS': 'WSH',   // Washington Wizards: PP=WAS, internal=WSH
+  'NOP': 'NO',    // New Orleans Pelicans: PP=NOP, internal=NO
+  'GSW': 'GS',    // Golden State Warriors: PP=GSW, internal=GS
+};
+
+/**
+ * Normalize a PrizePicks team abbreviation to the internal abbreviation used for
+ * pace data lookups, game list matching, and team defense rankings.
+ */
+export function normalizePPTeamAbbrev(ppTeam: string): string {
+  return PP_TO_INTERNAL_ABBREV[ppTeam] ?? ppTeam;
+}
+
+function normalizePaceAbbrev(team: string): string {
+  return normalizePPTeamAbbrev(team);
+}
+
+/**
  * Calculate pace adjustment for a game.
  * Returns: (gamePace / leagueAvgPace - 1)
  * Positive = faster pace (boost OVERs), negative = slower pace (boost UNDERs)
@@ -226,8 +253,8 @@ export async function fetchTeamPace(): Promise<{ pace: Record<string, number>; l
  */
 export function calculatePaceAdjustment(team1: string, team2: string): number {
   const leagueAvg = cachedLeagueAvgPace || 100.0;
-  const pace1 = cachedPace?.[team1] ?? leagueAvg;
-  const pace2 = cachedPace?.[team2] ?? leagueAvg;
+  const pace1 = cachedPace?.[normalizePaceAbbrev(team1)] ?? leagueAvg;
+  const pace2 = cachedPace?.[normalizePaceAbbrev(team2)] ?? leagueAvg;
   const gamePace = (pace1 + pace2) / 2;
   return (gamePace / leagueAvg) - 1;
 }

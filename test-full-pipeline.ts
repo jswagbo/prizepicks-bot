@@ -5,7 +5,7 @@
  */
 
 import { getProjections, type PrizePicksProjection } from './src/prizepicks/prizepicks-client';
-import { analyzeMatchup } from './src/prizepicks/matchup-analyzer';
+import { analyzeMatchup, normalizePPTeamAbbrev, fetchTeamPace } from './src/prizepicks/matchup-analyzer';
 import { scoreProjection, rankProjections } from './src/prizepicks/pick-scorer';
 import { getTodaysGames } from './src/prizepicks/nba-stats-client';
 
@@ -13,6 +13,9 @@ async function testFullPipeline() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  PrizePicks Full Pipeline Test');
   console.log('═══════════════════════════════════════════════════════════\n');
+
+  // Warm up pace data before scoring (required for non-zero pace adjustments)
+  await fetchTeamPace().catch(() => {});
 
   // Step 1: Fetch today's games
   console.log('📅 Step 1: Fetching today\'s NBA games...');
@@ -51,19 +54,21 @@ async function testFullPipeline() {
       console.log(`\n📊 Analyzing: ${projection.playerName} (${projection.team})`);
       console.log(`   Stat: ${projection.statType} | Line: ${projection.line}`);
 
-      // Find opponent from today's games
+      // Find opponent from today's games.
+      // Normalize PrizePicks abbreviations (SAS→SA, NYK→NY, UTA→UTAH, WAS→WSH, etc.)
+      const normalizedTeam = normalizePPTeamAbbrev(projection.team);
       const game = todaysGames.find(g => 
-        g.homeTeam === projection.team || g.awayTeam === projection.team
+        g.homeTeam === normalizedTeam || g.awayTeam === normalizedTeam
       );
       const opponent = game 
-        ? (game.homeTeam === projection.team ? game.awayTeam : game.homeTeam)
+        ? (game.homeTeam === normalizedTeam ? game.awayTeam : game.homeTeam)
         : 'UNKNOWN';
       const homeAway = game 
-        ? (game.homeTeam === projection.team ? 'home' as const : 'away' as const)
+        ? (game.homeTeam === normalizedTeam ? 'home' as const : 'away' as const)
         : 'home' as const;
       const gameSpread = game?.spread ?? null;
 
-      // Analyze matchup (with playerTeam parameter for new features)
+      // Analyze matchup (pass normalized team abbrev for pace/B2B lookup)
       const matchup = await analyzeMatchup(
         projection.playerName,
         projection.statType,
@@ -71,7 +76,7 @@ async function testFullPipeline() {
         projection.line,
         homeAway,
         gameSpread,
-        projection.team // Pass team for pace/B2B calculation
+        normalizedTeam // normalized for pace data lookup
       );
 
       console.log(`   ├─ EWMA: ${matchup.ewma}`);
