@@ -50,7 +50,7 @@ export interface ScoredPick {
   consensusEdge: number;
   /** Vegas game over/under total */
   vegasTotal: number | null;
-  /** Projected line from Dimers / BettingPros sharp models */
+  /** Projected line from Dimers sharp models */
   sharpProjection: number | null;
 }
 
@@ -432,7 +432,7 @@ export async function scoreProjection(
     );
   }
 
-  // ─── Sharp model projection (Dimers / BettingPros) ────────────────────────
+  // ─── Sharp model projection (Dimers) ─────────────────────────────────────
   let sharpProjection: number | null = null;
   try {
     sharpProjection = await getSharpProjection(
