@@ -96,7 +96,11 @@ async function main() {
   report += `## 📋 Today's Slate\n\n`;
   report += `| Game | Spread | O/U |\n|------|--------|-----|\n`;
   for (const g of games) {
-    const spread = g.spread !== null && g.spread !== undefined ? `${g.awayTeam} ${g.spread > 0 ? '+' : ''}${g.spread}` : 'N/A';
+    // g.spread is the HOME team's handicap (hdp from DraftKings/FanDuel).
+    // Negative = home favored, Positive = home underdog.
+    const spread = g.spread !== null && g.spread !== undefined
+      ? `${g.homeTeam} ${g.spread > 0 ? '+' : ''}${g.spread}`
+      : 'N/A';
     const ou = g.total !== null && g.total !== undefined ? `${g.total}` : 'N/A';
     report += `| ${g.awayTeam} @ ${g.homeTeam} | ${spread} | ${ou} |\n`;
   }
