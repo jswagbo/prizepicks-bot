@@ -186,7 +186,31 @@ export async function scoreProjection(
     if (playerInjury && ['Questionable', 'Doubtful', 'Day-To-Day'].includes(playerInjury.status)) {
       playerInjuryFlag = true;
       injuryContext = `⚠️ ${playerInjury.status}: ${playerInjury.description}`;
-      console.log(`[Scorer] ${projection.playerName} is ${playerInjury.status}`);
+      
+      // Apply score penalty based on injury severity — injured players are unreliable
+      // OVER picks especially risky (limited minutes, rust, could re-aggravate)
+      if (playerInjury.status === 'Doubtful') {
+        injuryBonus = -0.15; // Heavy penalty — might not even play
+      } else if (playerInjury.status === 'Questionable') {
+        injuryBonus = -0.10; // Significant penalty — likely limited if playing
+      } else if (playerInjury.status === 'Day-To-Day') {
+        injuryBonus = -0.06; // Moderate penalty — could be on minutes restriction
+      }
+      
+      console.log(`[Scorer] ${projection.playerName} is ${playerInjury.status} (${(injuryBonus * 100).toFixed(0)}% penalty)`);
+    }
+    
+    // Check if player recently returned from injury (recent minutes way below season avg = rust)
+    if (!playerInjuryFlag && matchup.expectedMinutes !== null && matchup.seasonAvgMinutes !== null) {
+      const expectedMin = matchup.expectedMinutes;
+      const seasonMin = matchup.seasonAvgMinutes;
+      if (seasonMin > 0 && expectedMin > 0 && expectedMin < seasonMin * 0.7) {
+        // Player's recent minutes are way below season avg — likely coming back from injury
+        const minutesDrop = (seasonMin - expectedMin) / seasonMin;
+        injuryBonus = -(minutesDrop * 0.08); // Up to -8% penalty for severe minutes drops
+        injuryContext = `⚠️ Possible injury return: recent ${expectedMin.toFixed(1)} min vs season ${seasonMin.toFixed(1)} min (${(minutesDrop * 100).toFixed(0)}% drop)`;
+        console.log(`[Scorer] ${projection.playerName}: ${injuryContext}`);
+      }
     }
 
     // Check for teammate injuries that boost this player's usage
@@ -347,7 +371,12 @@ export async function scoreProjection(
   let confidence = scoreToConfidence(Math.abs(totalScore));
   
   if (playerInjuryFlag) {
-    confidence = Math.max(1, confidence - 1); // Reduce confidence by 1 star for injured players
+    // Doubtful: -2 stars, Questionable: -2 stars, Day-To-Day: -1 star
+    const injStatus = injuries?.find(
+      (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
+    )?.status;
+    const starPenalty = (injStatus === 'Doubtful' || injStatus === 'Questionable') ? 2 : 1;
+    confidence = Math.max(1, confidence - starPenalty);
   }
 
   // ─── Build Reasoning ─────────────────────────────────────────────────────
