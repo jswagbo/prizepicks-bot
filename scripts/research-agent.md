@@ -104,7 +104,7 @@ initializeDatabase({ path: './data/fund.db' });
 - [ ] `Games today:` count > 0
 - [ ] At least SOME spreads are non-null (if all null, note it in report)
 - [ ] Top picks JSON has non-zero `totalScore`, `ev`, and `confidence` values
-- [ ] `matchup.last5Avg` and `last10Avg` are non-zero for the top picks (context — not used in score)
+- [ ] Top picks have non-zero `totalScore` (raw score should be visible in output)
 - [ ] **Pinnacle line data:** At least some top picks have non-null `pinnacleLine` (not ALL null — if ALL null, THE_ODDS_API_KEY may be missing or Pinnacle not available for these games; note explicitly)
 - [ ] **consensusLine** present for top picks when DK/FD lines are available
 - [ ] **vegasTotal** is non-null for at least some games (confirms fetchGameTotals is working)
@@ -168,7 +168,7 @@ For each pick:
 • Book consensus: DK [X] / FD [X] / Pinnacle [X] = avg [X] vs PP [Y]
 • Vegas total: [X] ([high/low/neutral]) → [scoring OVER/UNDER boosted or N/A]
 • Sharp model: Dimers/BettingPros project [X] ([agrees/conflicts with OVER/UNDER])
-• L3: [X] | L10: [X] | SZN: [X]  ← context only, not used in score
+• Raw score: [totalScore] | EV: [ev]
 • 📈 Sharp signal: ✅/⚠️/❓
 • ⚠️ Blowout risk: [spread]pt spread → [penalty or "no penalty"]
 • Confidence: ⭐⭐⭐⭐⭐

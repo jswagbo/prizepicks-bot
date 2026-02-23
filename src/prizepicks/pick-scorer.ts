@@ -548,13 +548,6 @@ export async function scoreProjection(
     );
   }
 
-  // Trailing averages — context only, not used in score
-  if (matchup.last3Avg > 0 || matchup.last10Avg > 0) {
-    reasons.push(
-      `Context: L3 ${matchup.last3Avg} | L10 ${matchup.last10Avg} | SZN ${matchup.seasonAvg}`
-    );
-  }
-
   // Back-to-back
   if (backToBackPenalty > 0) {
     reasons.push('⚠️ Back-to-back game → -5% OVER penalty');
