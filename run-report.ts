@@ -105,12 +105,14 @@ async function main() {
     const dir = p.pick;
     const absSpread = p.matchup.gameSpread ? Math.abs(p.matchup.gameSpread) : 0;
     const blowoutNote = absSpread >= 8 && dir === 'OVER' ? ' ⚠️ BLOWOUT RISK' : '';
-    report += `### ${i + 1}. ${p.projection.playerName} — ${p.projection.statType} ${dir} ${p.projection.line}${blowoutNote}\n`;
+    const injuryTag = p.playerInjured ? ` 🏥 ${p.playerInjuryStatus || 'Injured'}` : '';
+    report += `### ${i + 1}. ${p.projection.playerName}${injuryTag} — ${p.projection.statType} ${dir} ${p.projection.line}${blowoutNote}\n`;
     report += `${stars(p.confidence)} (${p.confidence}/5) | EV: ${(p.ev * 100).toFixed(1)}% | Score: ${p.totalScore.toFixed(4)}\n\n`;
     report += `- **Model Line:** ${p.matchup.estimatedLine} vs **PP Line:** ${p.projection.line}\n`;
     report += `- **Matchup:** ${p.matchup.matchupGrade} grade vs ${p.matchup.opponent}\n`;
     report += `- **Trends:** L3: ${p.matchup.last3Avg} | L10: ${p.matchup.last10Avg} | SZN: ${p.matchup.seasonAvg}\n`;
-    if (p.injuryContext) report += `- **Injury:** ${p.injuryContext}\n`;
+    if (p.playerInjured) report += `- **⚠️ INJURY:** ${p.playerInjuryStatus} — ${p.injuryContext || 'Check status before playing'}\n`;
+    else if (p.injuryContext) report += `- **Injury:** ${p.injuryContext}\n`;
     if (p.expertConsensus) report += `- **Experts:** ${p.expertConsensus}\n`;
     report += `- **Reasoning:** ${p.reasoning}\n\n`;
   }
@@ -122,11 +124,13 @@ async function main() {
     const nearLocks = ranked.filter(p => p.confidence >= 4).slice(0, 3);
     report += `No 5-star locks today. Best high-confidence picks (4+ stars):\n\n`;
     for (const p of nearLocks) {
-      report += `- **${p.projection.playerName}** ${p.projection.statType} ${p.pick} ${p.projection.line} ${stars(p.confidence)} — ${p.reasoning.slice(0, 100)}\n`;
+      const injTag = p.playerInjured ? ` 🏥 ${p.playerInjuryStatus}` : '';
+      report += `- **${p.projection.playerName}**${injTag} ${p.projection.statType} ${p.pick} ${p.projection.line} ${stars(p.confidence)} — ${p.reasoning.slice(0, 100)}\n`;
     }
   } else {
     for (const p of locks) {
-      report += `- **${p.projection.playerName}** ${p.projection.statType} ${p.pick} ${p.projection.line} ${stars(p.confidence)} — ${p.reasoning.slice(0, 100)}\n`;
+      const injTag = p.playerInjured ? ` 🏥 ${p.playerInjuryStatus}` : '';
+      report += `- **${p.projection.playerName}**${injTag} ${p.projection.statType} ${p.pick} ${p.projection.line} ${stars(p.confidence)} — ${p.reasoning.slice(0, 100)}\n`;
     }
   }
   report += `\n`;
@@ -135,7 +139,8 @@ async function main() {
   report += `## 🎰 Best 4-Pick Parlay\n\n`;
   if (parlay && parlay.picks) {
     for (const p of parlay.picks) {
-      report += `- **${p.projection.playerName}** ${p.projection.statType} ${p.pick} ${p.projection.line} (${stars(p.confidence)})\n`;
+      const injTag = p.playerInjured ? ` 🏥 ${p.playerInjuryStatus}` : '';
+      report += `- **${p.projection.playerName}**${injTag} ${p.projection.statType} ${p.pick} ${p.projection.line} (${stars(p.confidence)})\n`;
     }
     report += `\n*Strategy: Uncorrelated games to minimize variance*\n\n`;
   }

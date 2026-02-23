@@ -25,6 +25,8 @@ export interface ScoredPick {
   totalScore: number;
   reasoning: string;
   injuryContext?: string; // e.g., "Booker OUT → +15% usage boost"
+  playerInjured?: boolean; // true if this player has an injury designation
+  playerInjuryStatus?: string; // e.g., "Day-To-Day", "Questionable", "Doubtful"
   expertConsensus?: string; // e.g., "3/4 experts agree UNDER"
   sharpSignal?: 'AGREE' | 'DISAGREE' | 'NEUTRAL';
 }
@@ -425,6 +427,10 @@ export async function scoreProjection(
     totalScore: Math.round(totalScore * 10000) / 10000,
     reasoning: reasons.join('. ') || 'Marginal edge detected',
     injuryContext,
+    playerInjured: playerInjuryFlag,
+    playerInjuryStatus: playerInjuryFlag ? injuries?.find(
+      (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
+    )?.status : undefined,
     expertConsensus,
     sharpSignal,
   };
