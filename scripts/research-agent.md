@@ -11,7 +11,7 @@
 ## Step 1: Run the Data Pipeline
 
 ```bash
-cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export ODDS_API_KEY THE_ODDS_API_KEY && npx tsx -e "
+cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export THE_ODDS_API_KEY && npx tsx -e "
 import { getProjections } from './src/prizepicks/prizepicks-client';
 import { getTodaysGames, getPlayerAverages, searchPlayer } from './src/prizepicks/nba-stats-client';
 import { analyzeMatchup } from './src/prizepicks/matchup-analyzer';
@@ -114,7 +114,7 @@ initializeDatabase({ path: './data/fund.db' });
 Run the line comparison script to find PrizePicks lines that diverge from DraftKings/FanDuel consensus:
 
 ```bash
-cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export ODDS_API_KEY THE_ODDS_API_KEY && python3 /Users/jeffnwagbo/clawd/scripts/prizepicks-line-compare.py 2>&1
+cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export THE_ODDS_API_KEY && python3 /Users/jeffnwagbo/clawd/scripts/prizepicks-line-compare.py 2>&1
 ```
 
 This compares PrizePicks prop lines against sportsbook consensus. Large divergences = market mispricing = highest confidence picks.
