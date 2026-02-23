@@ -52,11 +52,17 @@ interface BoxScoreGame {
   };
 }
 
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
 // ─── Cache ───────────────────────────────────────────────────────────────────
 
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 let dimersCache: { data: SharpProjectionMap; timestamp: number } | null = null;
+let bettingProsCache: { data: SharpProjectionMap; timestamp: number } | null = null;
 let combinedCache: { data: SharpProjectionMap; timestamp: number } | null = null;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -195,6 +201,139 @@ async function fetchDimersProjections(): Promise<SharpProjectionMap> {
   return map;
 }
 
+// ─── BettingPros (via Python/Scrapling helper) ──────────────────────────────
+
+interface BettingProsProp {
+  playerName: string;
+  statType: string;
+  projection: number;
+  side: string;
+  ev: number;
+  betRating: number;
+  diff: number;
+  probability: number;
+  team: string;
+}
+
+/**
+ * Fetch BettingPros projections via the Python helper script.
+ * Uses Scrapling DynamicFetcher to render the JS-heavy page and extract
+ * embedded prop data (projections, EV, bet ratings).
+ *
+ * Returns top 25 props sorted by biggest divergence (highest EV).
+ */
+async function fetchBettingProsProjections(): Promise<SharpProjectionMap> {
+  if (bettingProsCache && Date.now() - bettingProsCache.timestamp < CACHE_TTL) {
+    return bettingProsCache.data;
+  }
+
+  const map: SharpProjectionMap = new Map();
+
+  try {
+    // Find the Python script
+    const scriptPaths = [
+      join(process.cwd(), 'scripts', 'fetch-bettingpros.py'),
+      '/Users/jeffnwagbo/prizepicks-bot/scripts/fetch-bettingpros.py',
+    ];
+    const scriptPath = scriptPaths.find(p => existsSync(p));
+
+    if (!scriptPath) {
+      console.log('[SharpProj] BettingPros script not found — skipping');
+      bettingProsCache = { data: map, timestamp: Date.now() };
+      return map;
+    }
+
+    // Check if scrapling venv exists
+    const venvPython = existsSync('/Users/jeffnwagbo/scrapling-env/bin/python3')
+      ? '/Users/jeffnwagbo/scrapling-env/bin/python3'
+      : 'python3';
+
+    console.log('[SharpProj] Fetching BettingPros projections via Scrapling...');
+
+    const output = execSync(`${venvPython} "${scriptPath}"`, {
+      timeout: 60000,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const props: BettingProsProp[] = JSON.parse(output.trim());
+
+    for (const prop of props) {
+      if (!prop.playerName || !prop.statType || prop.projection <= 0) continue;
+      if (!map.has(prop.playerName)) map.set(prop.playerName, new Map());
+      map.get(prop.playerName)!.set(prop.statType, Math.round(prop.projection * 10) / 10);
+    }
+
+    console.log(`[SharpProj] BettingPros: ${props.length} props, ${map.size} players`);
+  } catch (err) {
+    console.log(`[SharpProj] BettingPros error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  bettingProsCache = { data: map, timestamp: Date.now() };
+  return map;
+}
+
+// ─── Combined Sharp Projections ─────────────────────────────────────────────
+
+/**
+ * Fetch and merge Dimers + BettingPros projections.
+ * When both sources have a projection for the same player/stat, average them.
+ */
+async function getAllSharpProjections(): Promise<SharpProjectionMap> {
+  if (combinedCache && Date.now() - combinedCache.timestamp < CACHE_TTL) {
+    return combinedCache.data;
+  }
+
+  const [dimers, bettingPros] = await Promise.all([
+    fetchDimersProjections().catch((): SharpProjectionMap => new Map()),
+    fetchBettingProsProjections().catch((): SharpProjectionMap => new Map()),
+  ]);
+
+  // Merge: Dimers is primary (full coverage), BettingPros supplements
+  const merged: SharpProjectionMap = new Map();
+
+  // Copy all Dimers data
+  for (const [player, stats] of dimers) {
+    merged.set(player, new Map(stats));
+  }
+
+  // Merge BettingPros — average when both have data, add when only BP has it
+  for (const [player, stats] of bettingPros) {
+    // Find matching player in merged (fuzzy match)
+    let targetKey = player;
+    if (!merged.has(player)) {
+      for (const existing of merged.keys()) {
+        if (namesMatchFuzzy(existing, player)) {
+          targetKey = existing;
+          break;
+        }
+      }
+      if (!merged.has(targetKey)) {
+        merged.set(targetKey, new Map());
+      }
+    }
+
+    const mergedStats = merged.get(targetKey)!;
+    for (const [stat, val] of stats) {
+      if (mergedStats.has(stat)) {
+        // Average Dimers + BettingPros
+        const avg = Math.round(((mergedStats.get(stat)! + val) / 2) * 10) / 10;
+        mergedStats.set(stat, avg);
+      } else {
+        mergedStats.set(stat, val);
+      }
+    }
+  }
+
+  const dimersCount = [...dimers.values()].reduce((s, m) => s + m.size, 0);
+  const bpCount = [...bettingPros.values()].reduce((s, m) => s + m.size, 0);
+  const mergedCount = [...merged.values()].reduce((s, m) => s + m.size, 0);
+  console.log(`[SharpProj] Combined: Dimers ${dimersCount} + BettingPros ${bpCount} → ${mergedCount} total projections for ${merged.size} players`);
+
+  combinedCache = { data: merged, timestamp: Date.now() };
+  return merged;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 function namesMatchFuzzy(a: string, b: string): boolean {
@@ -226,7 +365,7 @@ export async function getSharpProjection(
   statType: string
 ): Promise<number | null> {
   try {
-    const all = await fetchDimersProjections();
+    const all = await getAllSharpProjections();
 
     // Find player by name (exact or fuzzy match)
     let found: Map<string, number> | undefined;
@@ -264,5 +403,5 @@ export function describeSharpProjection(
   const pct = ppLine !== 0 ? ((diff / ppLine) * 100).toFixed(1) : '0';
   const agrees = (diff > 0 && pickDirection === 'OVER') || (diff < 0 && pickDirection === 'UNDER');
   const agreesStr = agrees ? '✅ agrees' : '⚠️ conflicts';
-  return `Dimers projects ${sharpProj} (${agreesStr} with ${pickDirection}, ${diff > 0 ? '+' : ''}${pct}%)`;
+  return `Sharp models project ${sharpProj} (${agreesStr} with ${pickDirection}, ${diff > 0 ? '+' : ''}${pct}%)`;
 }
