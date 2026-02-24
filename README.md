@@ -52,6 +52,20 @@ pip install nba_api pandas
 
 The bot automatically detects `.venv/bin/python3` in the project root. If the venv is missing it falls back to system `python3`, but `nba_api` must still be importable.
 
+### BettingPros Sharp Projections (Optional)
+
+BettingPros projections require [Scrapling](https://github.com/D4Vinci/Scrapling) (Playwright-based scraper) in a separate venv:
+
+```bash
+python3 -m venv scrapling-env
+source scrapling-env/bin/activate
+pip install scrapling
+scrapling install  # installs Playwright browsers
+deactivate
+```
+
+The bot searches for the scrapling venv in: `./scrapling-env/`, `~/.scrapling-env/`, or `~/.venv/`. If not found, BettingPros is skipped gracefully and the bot uses Dimers/StatsInsider projections only.
+
 ## How to Run
 
 ```bash
