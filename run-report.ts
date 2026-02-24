@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { getProjections, getTodaysGames, analyzeMatchup, scoreProjection } from './src/prizepicks';
 import { getInjuryReport, getTeamInjuryImpact } from './src/prizepicks/injury-news-client';
 import { getExpertPicks, getConsensusForPick } from './src/prizepicks/expert-picks-client';
