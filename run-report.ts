@@ -1,12 +1,29 @@
 import { getProjections, getTodaysGames, analyzeMatchup, scoreProjection } from './src/prizepicks';
 import { getInjuryReport, getTeamInjuryImpact } from './src/prizepicks/injury-news-client';
 import { getExpertPicks, getConsensusForPick } from './src/prizepicks/expert-picks-client';
-import { rankProjections, buildParlay, type ScoredPick } from './src/prizepicks/pick-scorer';
+import { rankProjections, buildParlay, savePicks, type ScoredPick } from './src/prizepicks/pick-scorer';
 import { getTeamDefenseRankings } from './src/prizepicks/nba-stats-client';
 import { fetchTeamPace, normalizePPTeamAbbrev } from './src/prizepicks/matchup-analyzer';
+import { updatePickResults, getPerformanceStats } from './src/prizepicks/results-tracker';
 import { writeFileSync, mkdirSync } from 'fs';
 
 async function main() {
+  // ─── STEP 0: Resolve yesterday's picks ──────────────────────────────────
+  console.log('=== STEP 0: Check Yesterday\'s Results ===');
+  try {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const resolved = await updatePickResults(yesterday);
+    if (resolved > 0) {
+      console.log(`✅ Resolved ${resolved} picks from ${yesterday}`);
+      const stats = getPerformanceStats(30);
+      console.log(`📊 Last 30 days: ${stats.hits}/${stats.hits + stats.misses} hits (${(stats.hitRate * 100).toFixed(1)}%) | ${stats.pending} pending\n`);
+    } else {
+      console.log(`No unresolved picks from ${yesterday}\n`);
+    }
+  } catch (e) {
+    console.error('Results check failed (non-fatal):', (e as Error).message, '\n');
+  }
+
   console.log('=== STEP 1: Fetch Data ===');
   
   const [games, projections, injuries, expertPicks, defenseRankings] = await Promise.all([
@@ -207,6 +224,20 @@ async function main() {
   writeFileSync(outPath, report);
   console.log(`\nReport saved to ${outPath}`);
   console.log(`Report length: ${report.length} chars`);
+
+  // ─── Save picks to DB for tracking ──────────────────────────────────────
+  try {
+    savePicks(dateStr, top5);
+    console.log(`💾 Saved ${top5.length} top picks to database for accuracy tracking`);
+
+    // Show cumulative performance
+    const stats = getPerformanceStats();
+    if (stats.hits + stats.misses > 0) {
+      console.log(`📊 All-time: ${stats.hits}/${stats.hits + stats.misses} hits (${(stats.hitRate * 100).toFixed(1)}%)`);
+    }
+  } catch (e) {
+    console.error('Failed to save picks (non-fatal):', (e as Error).message);
+  }
 }
 
 main().catch(e => { console.error('FATAL:', e); process.exit(1); });
