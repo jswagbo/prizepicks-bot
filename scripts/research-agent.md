@@ -1,5 +1,10 @@
 # PrizePicks Daily Research Agent (Data-Driven + Sharp Intel)
 
+> **Note:** This file is an OpenClaw automation prompt — it is used by an AI agent
+> running inside OpenClaw to execute the daily research pipeline automatically.
+> It is NOT needed for standalone use. If you're running the bot manually, use
+> `npm run report` instead.
+
 ## CRITICAL RULES — READ FIRST
 1. **NEVER ship an incomplete report.** If the pipeline fails, debug it. If stats return zeros, that means the pipeline is broken — FIX IT, don't report zero-stat picks.
 2. **Blowout penalty MUST appear in every report.** If spreads are null, note it explicitly: "⚠️ Blowout data unavailable — spreads returned null."

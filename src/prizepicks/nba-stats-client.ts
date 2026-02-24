@@ -7,10 +7,12 @@
 
 import { getDatabase } from '../core/db/database';
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import path from 'path';
 
-// Path to Python venv and stats script
-const VENV_PYTHON = path.resolve(__dirname, '../../.venv/bin/python3');
+// Path to Python venv and stats script — try project .venv first, then system python3
+const _localVenv = path.join(process.cwd(), '.venv', 'bin', 'python3');
+const VENV_PYTHON = existsSync(_localVenv) ? _localVenv : 'python3';
 const STATS_SCRIPT = path.resolve(__dirname, '../../scripts/nba-stats.py');
 
 /**

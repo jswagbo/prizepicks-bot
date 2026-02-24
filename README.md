@@ -2,6 +2,101 @@
 
 Daily NBA PrizePicks player prop analysis powered by a quantitative data pipeline and sharp betting intelligence. Pulls live projections, player stats, matchup data, injury reports, and expert picks — then scores every prop for edge detection.
 
+## Quick Start
+
+```bash
+# 1. Clone and install
+git clone https://github.com/your-username/prizepicks-bot.git
+cd prizepicks-bot
+npm install
+
+# 2. Set up Python environment (needed for NBA player stats via nba_api)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install nba_api pandas
+
+# 3. Configure environment variables
+cp .env.example .env
+# Edit .env and add your API key (see API Keys section below)
+
+# 4. Initialize the database (first run only)
+npx tsx seed-gamelogs.ts
+
+# 5. Generate today's report
+npm run report
+```
+
+The report is saved to `./reports/prizepicks-report-YYYY-MM-DD.md`.
+
+## API Keys
+
+Only one API key is required:
+
+| Key | Source | Cost | Used for |
+|-----|--------|------|----------|
+| `THE_ODDS_API_KEY` | [the-odds-api.com](https://the-odds-api.com) | Free tier (~500 req/month) | DraftKings, FanDuel, and Pinnacle lines; game totals; team totals; player props |
+
+The free tier is sufficient for daily use (~5–10 requests per report run).
+
+`ODDS_API_KEY` (odds-api.io) is an optional secondary source and can be left blank.
+
+## Python Dependency
+
+The NBA stats module calls `nba_api` via a Python subprocess bridge. You need Python 3 installed, then create a virtual environment in the project root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install nba_api pandas
+```
+
+The bot automatically detects `.venv/bin/python3` in the project root. If the venv is missing it falls back to system `python3`, but `nba_api` must still be importable.
+
+## How to Run
+
+```bash
+# Generate today's report
+npm run report
+
+# The report is written to:
+# ./reports/prizepicks-report-YYYY-MM-DD.md
+```
+
+Pipeline steps:
+1. Fetches today's PrizePicks NBA projections (standard lines only)
+2. Fetches spreads and totals from The Odds API (DraftKings primary)
+3. Loads defense rankings and pace data from SQLite cache
+4. Pulls injury reports from ESPN
+5. Scrapes expert picks from Covers, OddsShark, Action Network
+6. Scores each projection through the multi-factor model
+7. Fetches Pinnacle lines for top candidates
+8. Generates a markdown report saved to `./reports/`
+
+## Example Output
+
+```markdown
+# 🏀 PrizePicks Daily Report — February 24, 2026
+
+> Generated 6:02:11 AM PST
+> 8 NBA games | 312 standard projections analyzed | 247 scored
+
+## 📋 Today's Slate
+| Game | Spread | O/U |
+|------|--------|-----|
+| LAL @ GSW | GSW -4.5 | 228.5 |
+...
+
+## 🔥 Top 5 Value Picks
+
+### 1. Steph Curry — Points OVER 28.5
+⭐⭐⭐⭐⭐ (5/5) | EV: 12.3% | Score: 0.1231
+
+- **Model Line:** 30.8 vs **PP Line:** 28.5
+- **Matchup:** A grade vs LAL
+- **Trends:** L3: 31.2 | L10: 29.8 | SZN: 28.9
+- **Reasoning:** Pinnacle 30.5 (+7.0%) confirms over edge...
+```
+
 ## Architecture
 
 ```
@@ -66,7 +161,7 @@ L3/L5/L10/season averages are displayed in the report for context but **do not f
 
 ### Sharp Projections (Supplementary)
 
-Dimers.com and BettingPros model projections are scraped and displayed alongside picks. If their model agrees with the Pinnacle signal, it adds conviction. If they conflict, it's a flag. If scraping fails (anti-bot), we proceed gracefully without them.
+Dimers.com and BettingPros model projections are fetched and displayed alongside picks. If their model agrees with the Pinnacle signal, it adds conviction. If they conflict, it's a flag. If the API is down, we proceed gracefully.
 
 ### Confidence Stars
 
@@ -86,77 +181,14 @@ Injured players lose 1 star (Day-To-Day) or 2 stars (Questionable/Doubtful) and 
 |--------|------|-----------------|
 | [PrizePicks API](https://api.prizepicks.com) | None (free) | Live projections and lines |
 | [nba_api](https://github.com/swar/nba_api) (Python) | None (free) | Player game logs, team stats, pace ratings |
-| [The Odds API](https://the-odds-api.com) | API key (free tier) | DraftKings + FanDuel + Pinnacle lines + game totals + team totals. Player prop markets: Points, Rebounds, Assists, 3-PT Made, Blocked Shots, Steals, Turnovers, Pts+Rebs+Asts, Pts+Rebs, Pts+Asts, Rebs+Asts, Blks+Stls, Double Double, First Basket |
+| [The Odds API](https://the-odds-api.com) | API key (free tier) | DraftKings + FanDuel + Pinnacle lines + game totals + team totals |
 | [ESPN](https://www.espn.com) | None (scraped) | Injury reports, game logs (fallback) |
 | [NBA.com](https://stats.nba.com) | None | Live pace ratings per team |
 | [Covers.com](https://www.covers.com) | None (scraped) | Expert prop picks |
 | [OddsShark](https://www.oddsshark.com) | None (scraped) | Expert prop picks |
 | [Action Network](https://www.actionnetwork.com) | None (scraped) | Expert prop picks |
-| [Dimers.com](https://www.dimers.com) | None (scraped) | Sharp model player projections (supplementary) |
+| [Dimers.com](https://www.dimers.com) / StatsInsider | None (API) | Sharp model player projections (supplementary) |
 | [BettingPros](https://www.bettingpros.com) | None (scraped) | Sharp model player projections (supplementary) |
-
-## Setup
-
-### 1. Install Node dependencies
-
-```bash
-npm install
-```
-
-### 2. Set up Python environment (for NBA stats)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install nba_api pandas
-```
-
-### 3. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env and add your keys:
-# THE_ODDS_API_KEY — get one free at https://the-odds-api.com
-# ODDS_API_KEY — (optional) fallback odds source
-```
-
-### 4. Seed game logs (first run or after DB reset)
-
-```bash
-source .env && npx ts-node --transpile-only seed-gamelogs.ts
-```
-
-This pre-populates the SQLite cache with game logs for all active PrizePicks players. Required after a fresh install or schema migration.
-
-## Usage
-
-### Run the full pipeline
-
-```bash
-source .env && export THE_ODDS_API_KEY ODDS_API_KEY
-npx ts-node --transpile-only run-report.ts
-```
-
-Pipeline steps:
-1. Fetches today's PrizePicks NBA projections (filters to standard full-game lines)
-2. Fetches spreads from The Odds API (DraftKings primary)
-3. Loads defense rankings and pace data from DB cache
-4. Pulls injury reports from ESPN
-5. Scrapes expert picks from Covers, OddsShark, Action Network
-6. Scores each projection through the multi-factor model
-7. Fetches Pinnacle lines + sharp capper picks for top candidates
-8. Generates markdown report with top picks, locks, parlay, traps, injury flags
-
-### Automated daily report
-
-Runs via OpenClaw cron job daily. The report is delivered to Telegram with:
-- Top 5 value picks with full reasoning
-- Lock picks (5-star confidence)
-- Best 4-pick uncorrelated parlay
-- Trap picks to avoid (sharps disagree)
-- Injury impact analysis
-- Sharp money signals
-- Blowout alerts
 
 ## Key Files
 
@@ -169,7 +201,7 @@ Runs via OpenClaw cron job daily. The report is delivered to Telegram with:
 | `src/prizepicks/matchup-analyzer.ts` | Matchup grades, EWMA, minutes projection, pace factor |
 | `src/prizepicks/pick-scorer.ts` | Pinnacle-driven scoring engine + parlay builder |
 | `src/prizepicks/market-edge.ts` | Multi-book consensus engine (Pinnacle + DK + FD) |
-| `src/prizepicks/sharp-projections.ts` | Dimers + BettingPros model projection scraper |
+| `src/prizepicks/sharp-projections.ts` | Dimers + BettingPros model projection fetcher |
 | `src/prizepicks/injury-news-client.ts` | ESPN injury scraper + team impact analysis |
 | `src/prizepicks/expert-picks-client.ts` | Expert pick aggregation + line comparison |
 | `src/prizepicks/odds-service.ts` | Unified odds fetcher — player props + spreads + totals |
@@ -177,6 +209,7 @@ Runs via OpenClaw cron job daily. The report is delivered to Telegram with:
 | `src/core/db/database.ts` | SQLite connection + auto-migrations |
 | `src/core/db/schema.ts` | DB schema (v6) — game logs, defense, pace, picks |
 | `scripts/nba-stats.py` | Python bridge for nba_api calls |
+| `scripts/research-agent.md` | OpenClaw automation prompt (not needed for manual use) |
 
 ## Database
 
@@ -203,9 +236,13 @@ SQLite at `data/fund.db`. Migrations run automatically on first connection via `
 
 ## Stack
 
-- TypeScript + ts-node
+- TypeScript + tsx
 - better-sqlite3 (game logs, rankings, pick history)
 - Python + nba_api + pandas (player stats bridge)
 - PrizePicks API (unauthenticated)
-- The Odds API (free tier, ~100K credits/month)
+- The Odds API (free tier, ~500 requests/month)
 - ESPN APIs (injury reports, game logs fallback)
+
+## License
+
+MIT

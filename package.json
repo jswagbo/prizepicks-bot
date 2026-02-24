@@ -4,6 +4,7 @@
   "description": "Data-driven PrizePicks player prop analysis with sharp money intelligence",
   "main": "src/prizepicks/index.ts",
   "scripts": {
+    "report": "tsx run-report.ts",
     "dev": "tsx src/prizepicks/index.ts",
     "analyze": "tsx src/run.ts",
     "build": "tsc",

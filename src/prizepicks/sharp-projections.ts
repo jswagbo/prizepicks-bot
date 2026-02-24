@@ -231,22 +231,17 @@ async function fetchBettingProsProjections(): Promise<SharpProjectionMap> {
 
   try {
     // Find the Python script
-    const scriptPaths = [
-      join(process.cwd(), 'scripts', 'fetch-bettingpros.py'),
-      '/Users/jeffnwagbo/prizepicks-bot/scripts/fetch-bettingpros.py',
-    ];
-    const scriptPath = scriptPaths.find(p => existsSync(p));
+    const scriptPath = join(process.cwd(), 'scripts', 'fetch-bettingpros.py');
 
-    if (!scriptPath) {
+    if (!existsSync(scriptPath)) {
       console.log('[SharpProj] BettingPros script not found — skipping');
       bettingProsCache = { data: map, timestamp: Date.now() };
       return map;
     }
 
-    // Check if scrapling venv exists
-    const venvPython = existsSync('/Users/jeffnwagbo/scrapling-env/bin/python3')
-      ? '/Users/jeffnwagbo/scrapling-env/bin/python3'
-      : 'python3';
+    // Use project .venv if available, otherwise system python3
+    const localVenv = join(process.cwd(), '.venv', 'bin', 'python3');
+    const venvPython = existsSync(localVenv) ? localVenv : 'python3';
 
     console.log('[SharpProj] Fetching BettingPros projections via Scrapling...');
 
