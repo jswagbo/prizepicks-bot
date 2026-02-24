@@ -181,8 +181,8 @@ PARLAY RULES:
 **⚠️ Trap Picks:**
 [2-3 picks that look good but sharps/data say avoid]
 
-**📊 Top Line Divergences:**
-[Top 10 picks sorted by absolute book consensus edge % — these come from the market-edge data in Step 1, not a separate script]
+**📊 Top Line Divergences (MANDATORY — always include):**
+[Top 10 picks sorted by absolute book consensus edge % — these come from the market-edge data in Step 1, not a separate script. Format: "Player — Stat: Consensus X vs PP Y → +Z% OVER/UNDER edge". End with a 1-line takeaway summarizing the biggest inefficiencies.]
 
 ## Step 5: Save Report
 
@@ -201,4 +201,5 @@ Before sending, verify:
 - [ ] Reasoning is specific — must reference Pinnacle line if available
 - [ ] Trailing averages shown as CONTEXT only (not primary reasoning)
 - [ ] Parlay picks are from different games
+- [ ] **📊 Top Line Divergences section is present** with top 10 picks by absolute consensus edge %
 - [ ] Report saved to memory file
