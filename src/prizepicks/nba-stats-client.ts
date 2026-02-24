@@ -370,11 +370,29 @@ async function fetchOddsApiSpreads(): Promise<Map<string, number>> {
           const markets = game.bookmakers?.[bk] || [];
           const spreadMarket = markets.find(m => m.name === 'Spread');
           if (spreadMarket?.odds?.length) {
-            // First entry is the primary line
-            const primarySpread = spreadMarket.odds[0]?.hdp;
-            if (primarySpread !== undefined) {
-              spreads.set(`${game.home} vs ${game.away}`, primarySpread);
-              console.log(`[Odds API] ${game.home} vs ${game.away}: spread ${primarySpread} (${bk})`);
+            // Find the main line: the entry with odds closest to even (1.91 decimal = -110).
+            // The odds array may contain alternate spreads; odds[0] is NOT always the primary.
+            let bestHdp: number | undefined;
+            let bestDiff = Infinity;
+            for (const o of spreadMarket.odds) {
+              if (o.hdp === undefined) continue;
+              const homeOdds = parseFloat(o.home || '0');
+              const awayOdds = parseFloat(o.away || '0');
+              if (homeOdds <= 0 || awayOdds <= 0) continue;
+              // Main line has both sides closest to 1.91 (standard -110 juice)
+              const diff = Math.abs(homeOdds - 1.91) + Math.abs(awayOdds - 1.91);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                bestHdp = o.hdp;
+              }
+            }
+            // Fallback: if no odds parsed, take the first entry
+            if (bestHdp === undefined && spreadMarket.odds[0]?.hdp !== undefined) {
+              bestHdp = spreadMarket.odds[0].hdp;
+            }
+            if (bestHdp !== undefined) {
+              spreads.set(`${game.home} vs ${game.away}`, bestHdp);
+              console.log(`[Odds API] ${game.home} vs ${game.away}: spread ${bestHdp} (${bk})`);
               break;
             }
           }

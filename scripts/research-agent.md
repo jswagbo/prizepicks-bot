@@ -2,8 +2,7 @@
 
 > **Note:** This file is an OpenClaw automation prompt — it is used by an AI agent
 > running inside OpenClaw to execute the daily research pipeline automatically.
-> It is NOT needed for standalone use. If you're running the bot manually, use
-> `npm run report` instead.
+> It is NOT needed for standalone use.
 
 ## CRITICAL RULES — READ FIRST
 1. **NEVER ship an incomplete report.** If the pipeline fails, debug it. If stats return zeros, that means the pipeline is broken — FIX IT, don't report zero-stat picks.
