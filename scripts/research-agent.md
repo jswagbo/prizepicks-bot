@@ -199,6 +199,15 @@ Save the full report to `/Users/jeffnwagbo/clawd/memory/prizepicks-report-[YYYY-
 
 DO NOT use the message tool. Just include the report in your reply text — it will be delivered automatically via the announce mechanism.
 
+**CRITICAL: Your reply IS the Telegram message.** Include the FULL report in your reply — not a summary. Specifically, the following sections MUST appear in your delivered reply (not just the saved file):
+- Today's Games + Spreads
+- Top 5 Value Picks (with all detail lines)
+- LOCK picks
+- Best 4-Pick Parlay
+- Trap Picks
+- **📊 Top Line Divergences** (top 10 by edge %)
+Do NOT write an "executive summary" and refer to the saved file. The reply IS the report.
+
 ## FINAL QUALITY CHECK
 **⚠️ PP LINE CROSS-CHECK (CRITICAL):**
 Before publishing, verify EVERY pick's PP line in the report matches the "PP LINE REFERENCE" table from Step 1 output. The PP line is what PrizePicks shows — NOT the Pinnacle/DK/FD line. If you wrote "PP 23.5" but the reference table says "PP_LINE: 19.5", your report is WRONG. Fix it before sending. This is the #1 source of errors.
