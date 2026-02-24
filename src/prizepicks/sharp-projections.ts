@@ -239,19 +239,26 @@ async function fetchBettingProsProjections(): Promise<SharpProjectionMap> {
       return map;
     }
 
-    // Use project .venv if available, otherwise system python3
-    const localVenv = join(process.cwd(), '.venv', 'bin', 'python3');
-    const venvPython = existsSync(localVenv) ? localVenv : 'python3';
+    // Find Python with scrapling: check multiple venv locations
+    const venvCandidates = [
+      join(process.cwd(), '.venv', 'bin', 'python3'),
+      join(process.cwd(), 'scrapling-env', 'bin', 'python3'),
+      join(process.env.HOME || '', 'scrapling-env', 'bin', 'python3'),
+      'python3',
+    ];
+    const venvPython = venvCandidates.find(p => p === 'python3' || existsSync(p)) || 'python3';
 
-    console.log('[SharpProj] Fetching BettingPros projections via Scrapling...');
+    console.log(`[SharpProj] Fetching BettingPros projections via Scrapling (${venvPython})...`);
 
-    const output = execSync(`${venvPython} "${scriptPath}"`, {
-      timeout: 60000,
+    const output = execSync(`${venvPython} "${scriptPath}" 2>/dev/null`, {
+      timeout: 90000,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const props: BettingProsProp[] = JSON.parse(output.trim());
+    // Filter out any non-JSON lines (scrapling logs to stdout)
+    const jsonLine = output.trim().split('\n').filter(l => l.startsWith('[') || l.startsWith('{')).pop() || '[]';
+    const props: BettingProsProp[] = JSON.parse(jsonLine);
 
     for (const prop of props) {
       if (!prop.playerName || !prop.statType || prop.projection <= 0) continue;

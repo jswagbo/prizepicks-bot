@@ -11,6 +11,10 @@ Output format: Array of { playerName, statType, projection, side, ev, betRating,
 import sys
 import re
 import json
+import logging
+
+# Suppress scrapling's INFO logs from polluting stdout
+logging.disable(logging.INFO)
 
 try:
     from scrapling.fetchers import DynamicFetcher
