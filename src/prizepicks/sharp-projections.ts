@@ -13,8 +13,15 @@
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-/** Map<playerName, Map<statType, projectedLine>> */
-export type SharpProjectionMap = Map<string, Map<string, number>>;
+/** Projection data with optional confidence rating */
+interface ProjectionData {
+  value: number;
+  confidence?: number; // BettingPros bet_rating (1-10), null for Dimers
+  source?: 'dimers' | 'bettingpros';
+}
+
+/** Map<playerName, Map<statType, ProjectionData>> */
+export type SharpProjectionMap = Map<string, Map<string, ProjectionData>>;
 
 interface RoundOption {
   Active: boolean;
@@ -73,34 +80,40 @@ function addProjection(
   map: SharpProjectionMap,
   playerName: string,
   statType: string,
-  value: number
+  value: number,
+  confidence?: number,
+  source?: 'dimers' | 'bettingpros'
 ): void {
   if (value <= 0) return;
   const rounded = Math.round(value * 10) / 10;
   if (!map.has(playerName)) map.set(playerName, new Map());
-  map.get(playerName)!.set(statType, rounded);
+  map.get(playerName)!.set(statType, {
+    value: rounded,
+    confidence,
+    source,
+  });
 }
 
 function mapPlayerToProjections(map: SharpProjectionMap, player: PlayerProjection): void {
   const name = `${player.first_name} ${player.last_name}`;
-  addProjection(map, name, 'Points', player.points);
-  addProjection(map, name, 'Rebounds', player.rebounds);
-  addProjection(map, name, 'Assists', player.assists);
-  addProjection(map, name, 'Pts+Rebs+Asts', player.pra);
-  addProjection(map, name, 'Pts+Rebs', player.pr);
-  addProjection(map, name, 'Pts+Asts', player.pa);
-  addProjection(map, name, '3-PT Made', player.three_points);
-  addProjection(map, name, 'Blocked Shots', player.blocks);
-  addProjection(map, name, 'Steals', player.steals);
-  addProjection(map, name, 'Turnovers', player.turnovers);
-  addProjection(map, name, 'Fantasy Score', player.fantasy);
+  addProjection(map, name, 'Points', player.points, undefined, 'dimers');
+  addProjection(map, name, 'Rebounds', player.rebounds, undefined, 'dimers');
+  addProjection(map, name, 'Assists', player.assists, undefined, 'dimers');
+  addProjection(map, name, 'Pts+Rebs+Asts', player.pra, undefined, 'dimers');
+  addProjection(map, name, 'Pts+Rebs', player.pr, undefined, 'dimers');
+  addProjection(map, name, 'Pts+Asts', player.pa, undefined, 'dimers');
+  addProjection(map, name, '3-PT Made', player.three_points, undefined, 'dimers');
+  addProjection(map, name, 'Blocked Shots', player.blocks, undefined, 'dimers');
+  addProjection(map, name, 'Steals', player.steals, undefined, 'dimers');
+  addProjection(map, name, 'Turnovers', player.turnovers, undefined, 'dimers');
+  addProjection(map, name, 'Fantasy Score', player.fantasy, undefined, 'dimers');
   // Compute Rebs+Asts (not provided directly)
   if (player.rebounds > 0 && player.assists > 0) {
-    addProjection(map, name, 'Rebs+Asts', player.rebounds + player.assists);
+    addProjection(map, name, 'Rebs+Asts', player.rebounds + player.assists, undefined, 'dimers');
   }
   // Compute Blks+Stls
   if (player.blocks > 0 && player.steals > 0) {
-    addProjection(map, name, 'Blks+Stls', player.blocks + player.steals);
+    addProjection(map, name, 'Blks+Stls', player.blocks + player.steals, undefined, 'dimers');
   }
 }
 
@@ -263,7 +276,11 @@ async function fetchBettingProsProjections(): Promise<SharpProjectionMap> {
     for (const prop of props) {
       if (!prop.playerName || !prop.statType || prop.projection <= 0) continue;
       if (!map.has(prop.playerName)) map.set(prop.playerName, new Map());
-      map.get(prop.playerName)!.set(prop.statType, Math.round(prop.projection * 10) / 10);
+      map.get(prop.playerName)!.set(prop.statType, {
+        value: Math.round(prop.projection * 10) / 10,
+        confidence: prop.betRating,
+        source: 'bettingpros',
+      });
     }
 
     console.log(`[SharpProj] BettingPros: ${props.length} props, ${map.size} players`);
@@ -299,7 +316,7 @@ async function getAllSharpProjections(): Promise<SharpProjectionMap> {
     merged.set(player, new Map(stats));
   }
 
-  // Merge BettingPros — average when both have data, add when only BP has it
+  // Merge BettingPros with confidence-based weighting
   for (const [player, stats] of bettingPros) {
     // Find matching player in merged (fuzzy match)
     let targetKey = player;
@@ -316,13 +333,45 @@ async function getAllSharpProjections(): Promise<SharpProjectionMap> {
     }
 
     const mergedStats = merged.get(targetKey)!;
-    for (const [stat, val] of stats) {
+    for (const [stat, bpData] of stats) {
       if (mergedStats.has(stat)) {
-        // Average Dimers + BettingPros
-        const avg = Math.round(((mergedStats.get(stat)! + val) / 2) * 10) / 10;
-        mergedStats.set(stat, avg);
+        // Weight based on BettingPros confidence rating
+        const dimersData = mergedStats.get(stat)!;
+        const betRating = bpData.confidence || 0;
+
+        let bpWeight: number;
+        let dimersWeight: number;
+
+        if (betRating >= 8) {
+          // High confidence: BettingPros gets 60% weight
+          bpWeight = 0.6;
+          dimersWeight = 0.4;
+        } else if (betRating >= 6) {
+          // Medium confidence: 50/50 split
+          bpWeight = 0.5;
+          dimersWeight = 0.5;
+        } else {
+          // Low confidence: BettingPros gets 40% weight
+          bpWeight = 0.4;
+          dimersWeight = 0.6;
+        }
+
+        const weightedAvg = (dimersData.value * dimersWeight + bpData.value * bpWeight);
+        const finalConfidence = Math.max(bpData.confidence || 0, dimersData.confidence || 0);
+
+        mergedStats.set(stat, {
+          value: Math.round(weightedAvg * 10) / 10,
+          confidence: finalConfidence,
+          source: 'dimers', // Combined source defaults to dimers
+        });
+
+        console.log(
+          `[SharpProj] ${targetKey} ${stat}: Dimers ${dimersData.value} (${(dimersWeight * 100).toFixed(0)}%) + ` +
+          `BettingPros ${bpData.value} (${(bpWeight * 100).toFixed(0)}%, rating ${betRating}) = ${weightedAvg.toFixed(1)}`
+        );
       } else {
-        mergedStats.set(stat, val);
+        // Only BettingPros has this stat
+        mergedStats.set(stat, bpData);
       }
     }
   }
@@ -370,7 +419,41 @@ export async function getSharpProjection(
     const all = await getAllSharpProjections();
 
     // Find player by name (exact or fuzzy match)
-    let found: Map<string, number> | undefined;
+    let found: Map<string, ProjectionData> | undefined;
+
+    if (all.has(playerName)) {
+      found = all.get(playerName);
+    } else {
+      for (const [key, stats] of all) {
+        if (namesMatchFuzzy(key, playerName)) {
+          found = stats;
+          break;
+        }
+      }
+    }
+
+    if (!found) return null;
+    const projData = found.get(statType);
+    return projData?.value ?? null;
+  } catch (err) {
+    console.log(`[SharpProj] getSharpProjection error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Get a sharp model projection with confidence data for a player/stat type.
+ * Returns null if no projection found (graceful fallback).
+ */
+export async function getSharpProjectionWithConfidence(
+  playerName: string,
+  statType: string
+): Promise<ProjectionData | null> {
+  try {
+    const all = await getAllSharpProjections();
+
+    // Find player by name (exact or fuzzy match)
+    let found: Map<string, ProjectionData> | undefined;
 
     if (all.has(playerName)) {
       found = all.get(playerName);
@@ -386,7 +469,7 @@ export async function getSharpProjection(
     if (!found) return null;
     return found.get(statType) ?? null;
   } catch (err) {
-    console.log(`[SharpProj] getSharpProjection error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    console.log(`[SharpProj] getSharpProjectionWithConfidence error (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }

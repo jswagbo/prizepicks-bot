@@ -146,8 +146,8 @@ PRIMARY EDGE = Pinnacle divergence × 0.5
 
 Pinnacle divergence  = (Pinnacle line − PP line) / PP line
 Consensus divergence = (avg(DK + FD + Pinnacle) − PP line) / PP line
-Game environment     = Team total > 115 → +2% (high team scoring OVER boost)   ← preferred
-                       Team total < 105 → −2% (low team scoring UNDER boost)    ← preferred
+Game environment     = Team total > 115 → +6% (high team scoring OVER boost, 2x weight)   ← preferred
+                       Team total < 105 → −6% (low team scoring UNDER boost, 2x weight)    ← preferred
                        Vegas total > 228 → +2% (fallback when team total unavailable)
                        Vegas total < 215 → −2% (fallback when team total unavailable)
                        Team pace factor (from NBA.com) added at 25% weight
@@ -168,6 +168,10 @@ a fast team facing a slow team can have a 120 team total even in a 225-total gam
 | **B2B Penalty** | −5% | Back-to-back games penalize OVER picks |
 | **Blowout Penalty** | Up to −8% | Spreads ≥ 8 pts penalize OVERs (starters pulled) |
 | **Hit Rate History** | Variable | Historical accuracy by stat type and edge bucket |
+| **Minutes Adjustment** | Variable | Scales projections for blowout/B2B expected minutes changes |
+| **Positional Defense** | ±2% | Team defense grade vs player position (A=bad defense=OVER boost) |
+| **Pace Adjustment** | Variable | Adjusts averages for fast/slow game pace vs league average |
+| **Promo Line Penalty** | −1 star | Flags suspicious lines (>30% from season avg) with confidence reduction |
 
 ### Trailing Averages (Context Only)
 

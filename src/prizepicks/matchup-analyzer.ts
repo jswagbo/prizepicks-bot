@@ -259,6 +259,46 @@ export function calculatePaceAdjustment(team1: string, team2: string): number {
   return (gamePace / leagueAvg) - 1;
 }
 
+/**
+ * Adjust a raw statistical average for pace.
+ * Makes the model smarter about fast vs slow matchups by scaling projections
+ * based on expected game pace vs league average.
+ *
+ * Formula: adjustedAvg = rawAvg * (expectedGamePace / leagueAvgPace)
+ * where expectedGamePace = (playerTeamPace + opponentPace) / 2
+ *
+ * @param rawAvg - Raw statistical average (L5, L10, season, etc.)
+ * @param playerTeamPace - Pace rating for the player's team
+ * @param opponentPace - Pace rating for the opponent team
+ * @param leagueAvgPace - League average pace (for normalization)
+ * @returns Pace-adjusted average
+ */
+export function paceAdjust(
+  rawAvg: number,
+  playerTeamPace: number,
+  opponentPace: number,
+  leagueAvgPace: number
+): number {
+  if (rawAvg <= 0 || leagueAvgPace <= 0) {
+    return rawAvg;
+  }
+
+  const expectedGamePace = (playerTeamPace + opponentPace) / 2;
+  const paceMultiplier = expectedGamePace / leagueAvgPace;
+  const adjustedAvg = rawAvg * paceMultiplier;
+
+  // Log significant pace adjustments (>3% change)
+  if (Math.abs(paceMultiplier - 1) > 0.03) {
+    const changePercent = ((paceMultiplier - 1) * 100).toFixed(1);
+    console.log(
+      `[PaceAdjust] Expected pace ${expectedGamePace.toFixed(1)} vs league avg ${leagueAvgPace.toFixed(1)} ` +
+      `→ ${rawAvg.toFixed(1)} becomes ${adjustedAvg.toFixed(1)} (${changePercent}% ${paceMultiplier > 1 ? 'boost' : 'reduction'})`
+    );
+  }
+
+  return Math.round(adjustedAvg * 100) / 100; // Round to 2 decimal places
+}
+
 // ─── Exponential Weighted Moving Average ────────────────────────────────────
 
 const EWMA_DECAY = 0.85;

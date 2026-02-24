@@ -21,6 +21,9 @@ import { getSharpsReport, type SharpsReport } from './sharps-intel';
 import { fetchGameSpreads, fetchGameTotals } from './odds-service';
 import { getMarketEdge, describeMarketEdge, type MarketEdge } from './market-edge';
 import { getSharpProjection, describeSharpProjection } from './sharp-projections';
+import { estimateMinutes } from './minutes-model';
+import { getPositionalDefenseGrade, defenseGradeToAdjustment } from './positional-defense';
+import { paceAdjust, fetchTeamPace } from './matchup-analyzer';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,8 @@ export interface ScoredPick {
   playerInjuryStatus?: string;
   expertConsensus?: string;
   sharpSignal?: 'AGREE' | 'DISAGREE' | 'NEUTRAL';
+  /** Whether this pick was flagged as a promo/flash sale line */
+  isPromoLine?: boolean;
   // ─── New Pinnacle-model fields ────────────────────────────────────────────
   /** PrizePicks line for this projection */
   ppLine: number;
@@ -81,9 +86,13 @@ const GAME_ENV_BASE_ADJ = 0.02;
  * Team total thresholds (single-team expected scoring).
  * More precise than game total / 2 because pace asymmetry between teams
  * means a fast team can have a 120 total even in a 225-point projected game.
+ *
+ * Team totals are more predictive than game totals because they're specific
+ * to the player's team and account for matchup-specific pace/defensive factors.
  */
 const TEAM_HIGH_TOTAL_THRESHOLD = 115;
 const TEAM_LOW_TOTAL_THRESHOLD = 105;
+const TEAM_ENV_BASE_ADJ = 0.03; // Team totals get 3% boost vs 2% for game totals
 
 // ─── Confidence Mapping ───────────────────────────────────────────────────────
 
@@ -220,18 +229,52 @@ export async function scoreProjection(
     }
   }
 
+  // ─── Pace-adjusted projections ──────────────────────────────────────────────
+  let paceAdjustedAverages: {
+    last5Avg: number;
+    last10Avg: number;
+    seasonAvg: number;
+    ewma: number;
+  } | null = null;
+
+  try {
+    // Get current pace data
+    const { pace: paceData, leagueAvg: leagueAvgPace } = await fetchTeamPace();
+
+    const playerTeamPace = paceData[projection.team] ?? leagueAvgPace;
+    const opponentPace = paceData[matchup.opponent] ?? leagueAvgPace;
+
+    // Apply pace adjustments to create smarter projections
+    if (Math.abs(playerTeamPace - leagueAvgPace) > 1 || Math.abs(opponentPace - leagueAvgPace) > 1) {
+      paceAdjustedAverages = {
+        last5Avg: paceAdjust(matchup.last5Avg, playerTeamPace, opponentPace, leagueAvgPace),
+        last10Avg: paceAdjust(matchup.last10Avg, playerTeamPace, opponentPace, leagueAvgPace),
+        seasonAvg: paceAdjust(matchup.seasonAvg, playerTeamPace, opponentPace, leagueAvgPace),
+        ewma: paceAdjust(matchup.ewma, playerTeamPace, opponentPace, leagueAvgPace),
+      };
+
+      console.log(
+        `[Scorer] ${projection.playerName}: Pace-adjusted averages ` +
+        `(${playerTeamPace.toFixed(1)}/${opponentPace.toFixed(1)} vs ${leagueAvgPace.toFixed(1)} league avg)`
+      );
+    }
+  } catch (err) {
+    console.error(`[Scorer] Error applying pace adjustments for ${projection.playerName}:`, err);
+    // Continue without pace adjustments
+  }
+
   // ─── Vegas total & game environment adjustment ────────────────────────────
   const vegasTotal = findVegasTotal(totals, projection.team, matchup.opponent);
   let gameEnvAdj = 0;
 
   if (isScoringRelatedStat(projection.statType)) {
-    // Team total (specific to this player's team) is more precise than game total / 2
-    // because pace asymmetry means a fast team can project 120 in a 225-total game
+    // Team totals are 2x more predictive than game totals because they're specific
+    // to the player's team and account for matchup-specific pace/defensive factors
     if (marketEdge.teamTotal !== null) {
       if (marketEdge.teamTotal > TEAM_HIGH_TOTAL_THRESHOLD) {
-        gameEnvAdj = GAME_ENV_BASE_ADJ; // High team scoring expected → OVER boost
+        gameEnvAdj = TEAM_ENV_BASE_ADJ * 2; // High team scoring → +6% OVER boost (2x weight)
       } else if (marketEdge.teamTotal < TEAM_LOW_TOTAL_THRESHOLD) {
-        gameEnvAdj = -GAME_ENV_BASE_ADJ; // Low team scoring expected → UNDER boost
+        gameEnvAdj = -TEAM_ENV_BASE_ADJ * 2; // Low team scoring → -6% UNDER boost (2x weight)
       }
     } else if (vegasTotal !== null) {
       // Fallback: use combined game total when team total is unavailable
@@ -443,6 +486,35 @@ export async function scoreProjection(
     // non-fatal
   }
 
+  // ─── Minutes-adjusted sharp projection ──────────────────────────────────────
+  let minutesAdjustedSharpProjection: number | null = sharpProjection;
+  let minutesAdjustmentNote: string | undefined;
+
+  if (sharpProjection !== null && matchup.expectedMinutes !== null && matchup.seasonAvgMinutes !== null && matchup.seasonAvgMinutes > 0) {
+    // Estimate expected minutes for this game
+    const gameSpreadForPlayer = matchup.gameSpread !== null
+      ? (projection.team === matchup.opponent ? -matchup.gameSpread : matchup.gameSpread)  // Flip spread perspective if needed
+      : matchup.gameSpread;
+
+    const estimatedMinutes = estimateMinutes(
+      matchup.seasonAvgMinutes,
+      gameSpreadForPlayer,
+      matchup.isBackToBack,
+      matchup.homeAway === 'home'
+    );
+
+    // Scale the sharp projection based on minutes
+    const minutesRatio = estimatedMinutes / matchup.seasonAvgMinutes;
+    minutesAdjustedSharpProjection = sharpProjection * minutesRatio;
+
+    // Only note significant adjustments (>5% change)
+    if (Math.abs(minutesRatio - 1) > 0.05) {
+      const changePercent = ((minutesRatio - 1) * 100).toFixed(1);
+      minutesAdjustmentNote = `Minutes-adjusted projection: ${sharpProjection} → ${minutesAdjustedSharpProjection.toFixed(1)} (${changePercent}% for ${estimatedMinutes.toFixed(1)} vs ${matchup.seasonAvgMinutes.toFixed(1)} avg mins)`;
+      console.log(`[Scorer] ${projection.playerName}: ${minutesAdjustmentNote}`);
+    }
+  }
+
   // ─── Historical hit rate ───────────────────────────────────────────────────
   let hitRateAdjustment = 0;
   const prelimScoreForBucket =
@@ -463,9 +535,36 @@ export async function scoreProjection(
     }
   }
 
+  // ─── Positional defense adjustment ──────────────────────────────────────────
+  let positionalDefenseAdj = 0;
+  let positionalDefenseNote: string | undefined;
+
+  try {
+    const defenseGrade = await getPositionalDefenseGrade(
+      matchup.opponent,
+      projection.position || 'SF', // Default to SF if position not available
+      projection.statType
+    );
+
+    positionalDefenseAdj = defenseGradeToAdjustment(defenseGrade);
+
+    if (positionalDefenseAdj !== 0) {
+      const direction = positionalDefenseAdj > 0 ? 'OVER' : 'UNDER';
+      const absPercent = Math.abs(positionalDefenseAdj * 100).toFixed(1);
+      positionalDefenseNote = `${matchup.opponent} vs ${projection.position || 'SF'} ${projection.statType}: Grade ${defenseGrade} → ${direction} boosted ${absPercent}%`;
+
+      console.log(`[Scorer] ${projection.playerName}: ${positionalDefenseNote}`);
+    }
+  } catch (err) {
+    console.error(
+      `[Scorer] Error getting positional defense for ${projection.playerName}:`,
+      err
+    );
+  }
+
   // ─── Final score ──────────────────────────────────────────────────────────
   let rawScore =
-    primaryEdge + injuryBonus + expertBonus + sharpBonus + hitRateAdjustment;
+    primaryEdge + injuryBonus + expertBonus + sharpBonus + hitRateAdjustment + positionalDefenseAdj;
 
   // Back-to-back penalty applies to OVER picks
   if (backToBackPenalty > 0 && rawScore > 0) {
@@ -485,6 +584,35 @@ export async function scoreProjection(
   const pick: 'OVER' | 'UNDER' = totalScore > 0 ? 'OVER' : 'UNDER';
   let confidence = scoreToConfidence(Math.abs(totalScore));
 
+  // ─── Promo line penalty ──────────────────────────────────────────────────────
+  let isPromoLine = false;
+  let promoReason = '';
+
+  // Check for explicit promo flag from API
+  if (projection.isPromo) {
+    isPromoLine = true;
+    promoReason = 'API promo flag';
+  }
+
+  // Heuristic: check if line is significantly different from season average
+  if (!isPromoLine && matchup.seasonAvg > 0) {
+    const lineDiffFromAvg = Math.abs(projection.line - matchup.seasonAvg) / matchup.seasonAvg;
+
+    // If line is >30% different from season average, flag as potential promo
+    if (lineDiffFromAvg > 0.30) {
+      isPromoLine = true;
+      promoReason = `line ${projection.line} vs season avg ${matchup.seasonAvg.toFixed(1)} (${(lineDiffFromAvg * 100).toFixed(0)}% diff)`;
+    }
+  }
+
+  if (isPromoLine) {
+    confidence = Math.max(1, confidence - 1); // Reduce confidence by 1 star
+    console.log(
+      `[Scorer] ${projection.playerName}: Promo line detected (${promoReason}) → confidence reduced by 1 star ` +
+      `(${confidence + 1} → ${confidence})`
+    );
+  }
+
   if (playerInjuryFlag) {
     const injStatus = injuries?.find(
       (inj) => inj.playerName.toLowerCase() === projection.playerName.toLowerCase()
@@ -496,6 +624,14 @@ export async function scoreProjection(
 
   // ─── Build reasoning ──────────────────────────────────────────────────────
   const reasons: string[] = [];
+
+  // Promo line warning (show first if applicable)
+  if (isPromoLine) {
+    const flashSaleInfo = projection.flashSaleLine !== null
+      ? ` (flash sale from ${projection.flashSaleLine})`
+      : '';
+    reasons.push(`⚡ PROMO LINE — inflated edge, proceed with caution (${promoReason})${flashSaleInfo}`);
+  }
 
   // Primary edge: Pinnacle and consensus
   const edgeDescriptions = describeMarketEdge(marketEdge);
@@ -510,15 +646,15 @@ export async function scoreProjection(
     reasons.push('No book lines available — edge from sharp signals only');
   }
 
-  // Game environment — team total takes priority when available
+  // Game environment — team total takes priority with 2x weight when available
   if (marketEdge.teamTotal !== null) {
     if (marketEdge.teamTotal > TEAM_HIGH_TOTAL_THRESHOLD) {
       reasons.push(
-        `Team total: ${marketEdge.teamTotal} (high) → scoring OVER boosted`
+        `Team total: ${marketEdge.teamTotal} (high) → scoring OVER boosted +6% (2x weight)`
       );
     } else if (marketEdge.teamTotal < TEAM_LOW_TOTAL_THRESHOLD) {
       reasons.push(
-        `Team total: ${marketEdge.teamTotal} (low) → scoring UNDER boosted`
+        `Team total: ${marketEdge.teamTotal} (low) → scoring UNDER boosted -6% (2x weight)`
       );
     } else {
       reasons.push(`Team total: ${marketEdge.teamTotal} (neutral)`);
@@ -529,11 +665,11 @@ export async function scoreProjection(
   } else if (vegasTotal !== null) {
     if (vegasTotal > HIGH_TOTAL_THRESHOLD) {
       reasons.push(
-        `Vegas total ${vegasTotal} (high) → scoring OVER boosted`
+        `Vegas total ${vegasTotal} (high) → scoring OVER boosted +2%`
       );
     } else if (vegasTotal < LOW_TOTAL_THRESHOLD) {
       reasons.push(
-        `Vegas total ${vegasTotal} (low) → scoring UNDER boosted`
+        `Vegas total ${vegasTotal} (low) → scoring UNDER boosted -2%`
       );
     } else {
       reasons.push(`Vegas total ${vegasTotal} (neutral)`);
@@ -546,6 +682,17 @@ export async function scoreProjection(
     reasons.push(
       `${paceDir} pace game (${(matchup.paceAdjustment * 100).toFixed(1)}%)`
     );
+  }
+
+  // Pace-adjusted averages (if applied)
+  if (paceAdjustedAverages) {
+    const avgChange = ((paceAdjustedAverages.seasonAvg / matchup.seasonAvg) - 1) * 100;
+    if (Math.abs(avgChange) > 3) {
+      reasons.push(
+        `Pace-adjusted season avg: ${matchup.seasonAvg} → ${paceAdjustedAverages.seasonAvg.toFixed(1)} ` +
+        `(${avgChange > 0 ? '+' : ''}${avgChange.toFixed(1)}% for game pace)`
+      );
+    }
   }
 
   // Back-to-back
@@ -574,16 +721,26 @@ export async function scoreProjection(
     );
   }
 
-  // Sharp model projection
-  if (sharpProjection !== null) {
+  // Sharp model projection (with minutes adjustment)
+  if (minutesAdjustedSharpProjection !== null) {
     const note = describeSharpProjection(
       projection.playerName,
       projection.statType,
-      sharpProjection,
+      minutesAdjustedSharpProjection,
       projection.line,
       pick
     );
     reasons.push(note);
+  }
+
+  // Minutes adjustment note
+  if (minutesAdjustmentNote) {
+    reasons.push(minutesAdjustmentNote);
+  }
+
+  // Positional defense
+  if (positionalDefenseNote) {
+    reasons.push(positionalDefenseNote);
   }
 
   // Injury
@@ -612,6 +769,7 @@ export async function scoreProjection(
       : undefined,
     expertConsensus,
     sharpSignal,
+    isPromoLine,
     // New Pinnacle-model fields
     ppLine: projection.line,
     pinnacleLine: marketEdge.pinnacleLine,
@@ -619,7 +777,7 @@ export async function scoreProjection(
     pinnacleEdge: marketEdge.pinnacleEdge,
     consensusEdge: marketEdge.consensusEdge,
     vegasTotal,
-    sharpProjection,
+    sharpProjection: minutesAdjustedSharpProjection,
   };
 }
 
@@ -633,9 +791,18 @@ export function rankProjections(scoredPicks: ScoredPick[]): ScoredPick[] {
 /**
  * Build the best 4-pick parlay from top picks.
  * Tries to avoid correlated picks (same game / same team).
+ * Excludes promo lines as they have inflated edges.
  */
 export function buildParlay(topPicks: ScoredPick[]): ParlayPick {
-  const ranked = rankProjections(topPicks);
+  // Filter out promo lines first
+  const nonPromopicks = topPicks.filter(pick => !pick.isPromoLine);
+
+  if (nonPromopicks.length < topPicks.length) {
+    const promoCount = topPicks.length - nonPromopicks.length;
+    console.log(`[Parlay] Excluded ${promoCount} promo line(s) from parlay consideration`);
+  }
+
+  const ranked = rankProjections(nonPromopicks);
   const selected: ScoredPick[] = [];
   const usedGames = new Set<string>();
 
