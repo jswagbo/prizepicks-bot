@@ -201,7 +201,7 @@ PARLAY RULES:
 [2-3 picks that look good but sharps/data say avoid]
 
 **📊 Top Line Divergences (MANDATORY — always include):**
-[Top 10 picks sorted by absolute book consensus edge % — these come from the market-edge data in Step 1, not a separate script. Format: "Player — Stat: Consensus X vs PP Y → +Z% OVER/UNDER edge". End with a 1-line takeaway summarizing the biggest inefficiencies.]
+[Top 10 picks sorted by absolute Pinnacle edge %. Show ONLY Pinnacle vs PrizePicks — not consensus/average of books. Format: "Player — Stat: Pinnacle X vs PP Y → +Z% OVER/UNDER edge". If no Pinnacle line available, skip that pick. End with a 1-line takeaway summarizing the biggest inefficiencies.]
 
 ## Step 5: Save Report
 
@@ -217,7 +217,7 @@ DO NOT use the message tool. Just include the report in your reply text — it w
 - LOCK picks
 - Best 4-Pick Parlay
 - Trap Picks
-- **📊 Top Line Divergences** (top 10 by edge %)
+- **📊 Top Line Divergences** (top 10 by Pinnacle edge %)
 Do NOT write an "executive summary" and refer to the saved file. The reply IS the report.
 
 ## FINAL QUALITY CHECK
@@ -232,6 +232,6 @@ Before sending, verify:
 - [ ] Reasoning is specific — must reference Pinnacle line if available
 - [ ] Trailing averages shown as CONTEXT only (not primary reasoning)
 - [ ] Parlay picks are from different games
-- [ ] **📊 Top Line Divergences section is present** with top 10 picks by absolute consensus edge %
+- [ ] **📊 Top Line Divergences section is present** with top 10 picks by absolute Pinnacle edge % (Pinnacle vs PP only, not consensus)
 - [ ] **PP lines cross-checked** — every PP line in the report matches the PP LINE REFERENCE table from Step 1 (not the book line)
 - [ ] Report saved to memory file
