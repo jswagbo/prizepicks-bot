@@ -253,14 +253,21 @@ export async function checkResults(date: string): Promise<PickResult[]> {
 
   if (picks.length === 0) return [];
 
-  // Fetch all box scores for the date
-  const gameIds = await getGameIds(date);
-  const allPlayerStats = new Map<string, Record<string, number>>();
+  // Fetch box scores for the date AND next day (evening games show up on next day in ESPN)
+  const nextDate = new Date(date + 'T12:00:00Z');
+  nextDate.setDate(nextDate.getDate() + 1);
+  const nextDateStr = nextDate.toISOString().split('T')[0];
 
-  for (const gid of gameIds) {
-    const boxScore = await getBoxScore(gid);
-    for (const [name, stats] of boxScore) {
-      allPlayerStats.set(name, stats);
+  const allPlayerStats = new Map<string, Record<string, number>>();
+  for (const d of [date, nextDateStr]) {
+    const gameIds = await getGameIds(d);
+    for (const gid of gameIds) {
+      const boxScore = await getBoxScore(gid);
+      for (const [name, stats] of boxScore) {
+        if (!allPlayerStats.has(name)) {
+          allPlayerStats.set(name, stats);
+        }
+      }
     }
   }
 
