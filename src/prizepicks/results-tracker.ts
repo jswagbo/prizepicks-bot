@@ -139,9 +139,22 @@ async function getBoxScore(
         const statMap: Record<string, number> = {};
 
         labels.forEach((label: string, i: number) => {
-          const val = parseFloat(stats[i]);
-          if (!isNaN(val)) {
-            statMap[label.toUpperCase()] = val;
+          const raw = stats[i];
+          const upperLabel = label.toUpperCase();
+          
+          // Handle "made-attempted" format (FG, 3PT, FT)
+          if (raw && raw.includes('-')) {
+            const [made, attempted] = raw.split('-').map(Number);
+            if (!isNaN(made)) statMap[upperLabel] = made;           // e.g. FG = field goals made
+            if (!isNaN(attempted)) statMap[upperLabel + 'A'] = attempted;  // e.g. FGA = field goals attempted
+            if (!isNaN(made) && !isNaN(attempted)) {
+              statMap[upperLabel + 'M'] = made;  // explicit "made" key (FGM, 3PTM, FTM)
+            }
+          } else {
+            const val = parseFloat(raw);
+            if (!isNaN(val)) {
+              statMap[upperLabel] = val;
+            }
           }
         });
 
@@ -161,6 +174,16 @@ async function getBoxScore(
           (statMap['STL'] || 0) * 3 +
           (statMap['BLK'] || 0) * 3 -
           (statMap['TO'] || 0);
+        // Two-pointers: FGA - 3PTA (field goal attempts minus 3-point attempts)
+        if (statMap['FGA'] !== undefined && statMap['3PTA'] !== undefined) {
+          statMap['2PA'] = statMap['FGA'] - statMap['3PTA'];  // Two Pointers Attempted
+          statMap['2PM'] = (statMap['FG'] || statMap['FGM'] || 0) - (statMap['3PT'] || statMap['3PTM'] || 0); // Two Pointers Made
+        }
+        // Double-Double: count how many of PTS/REB/AST/STL/BLK >= 10, DD = 1 if ≥ 2
+        const ddCategories = [statMap['PTS'] || 0, statMap['REB'] || 0, statMap['AST'] || 0, statMap['STL'] || 0, statMap['BLK'] || 0];
+        const ddCount = ddCategories.filter(v => v >= 10).length;
+        statMap['DD'] = ddCount >= 2 ? 1 : 0;
+        statMap['TD'] = ddCount >= 3 ? 1 : 0;
 
         playerStats.set(name.toLowerCase(), statMap);
       }
@@ -180,8 +203,26 @@ function resolveStatKey(statType: string): string {
     'Steals': 'STL',
     'Blocks': 'BLK',
     'Turnovers': 'TO',
-    '3-PT Made': '3PM',
-    '3-Point Made': '3PM',
+    '3-PT Made': '3PTM',
+    '3-Point Made': '3PTM',
+    'Free Throws Made': 'FTM',
+    'Free Throws Attempted': 'FTA',
+    'FT Made': 'FTM',
+    'FT Attempted': 'FTA',
+    'Field Goals Made': 'FGM',
+    'Field Goals Attempted': 'FGA',
+    'FG Made': 'FGM',
+    'FG Attempted': 'FGA',
+    'Two Pointers Made': '2PM',
+    'Two Pointers Attempted': '2PA',
+    '2-PT Made': '2PM',
+    '2-PT Attempted': '2PA',
+    'Offensive Rebounds': 'OREB',
+    'Defensive Rebounds': 'DREB',
+    'Personal Fouls': 'PF',
+    'Minutes': 'MIN',
+    'Double-Double': 'DD',
+    'Triple-Double': 'TD',
     'Fantasy Score': 'FANTASY',
     'Pts+Rebs+Asts': 'PTS+REBS+ASTS',
     'Pts+Rebs': 'PTS+REBS',
