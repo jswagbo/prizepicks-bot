@@ -5,3 +5,7 @@ dist/
 .DS_Store
 .venv/
 reports/
+
+# SQLite WAL mode files
+*.db-shm
+*.db-wal

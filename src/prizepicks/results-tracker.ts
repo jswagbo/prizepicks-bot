@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '../core/db/database';
+import { recordPickResult } from './pick-scorer';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,53 @@ export interface Streak {
   length: number;
   statType: string;
   league: string;
+}
+
+// ─── Player Name Matching ────────────────────────────────────────────────────
+
+function normalizePlayerName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\s+(jr\.?|sr\.?|ii|iii|iv|v)$/i, '') // Strip suffixes
+    .replace(/[.']/g, '')                            // Strip periods and apostrophes
+    .replace(/\s+/g, ' ')                            // Normalize whitespace
+    .trim();
+}
+
+function fuzzyMatchPlayer(
+  pickName: string,
+  playerStats: Map<string, Record<string, number>>
+): Record<string, number> | undefined {
+  const normalized = normalizePlayerName(pickName);
+
+  // 1. Exact normalized match
+  for (const [espnName, stats] of playerStats) {
+    if (normalizePlayerName(espnName) === normalized) return stats;
+  }
+
+  // 2. Last name + first initial
+  const parts = normalized.split(' ');
+  if (parts.length >= 2) {
+    const firstInitial = parts[0][0];
+    const lastName = parts[parts.length - 1];
+    for (const [espnName, stats] of playerStats) {
+      const espnNorm = normalizePlayerName(espnName);
+      const espnParts = espnNorm.split(' ');
+      if (espnParts.length >= 2) {
+        const espnFirst = espnParts[0][0];
+        const espnLast = espnParts[espnParts.length - 1];
+        if (espnLast === lastName && espnFirst === firstInitial) return stats;
+      }
+    }
+  }
+
+  // 3. Substring match (for nicknames: "Nic" in "Nicolas")
+  for (const [espnName, stats] of playerStats) {
+    const espnNorm = normalizePlayerName(espnName);
+    if (espnNorm.includes(normalized) || normalized.includes(espnNorm)) return stats;
+  }
+
+  return undefined;
 }
 
 // ─── ESPN Box Score Parsing ──────────────────────────────────────────────────
@@ -102,6 +150,17 @@ async function getBoxScore(
           (statMap['PTS'] || 0) + (statMap['REB'] || 0) + (statMap['AST'] || 0);
         statMap['BLKS+STLS'] =
           (statMap['BLK'] || 0) + (statMap['STL'] || 0);
+        statMap['PTS+REBS'] = (statMap['PTS'] || 0) + (statMap['REB'] || 0);
+        statMap['PTS+ASTS'] = (statMap['PTS'] || 0) + (statMap['AST'] || 0);
+        statMap['REBS+ASTS'] = (statMap['REB'] || 0) + (statMap['AST'] || 0);
+        // PrizePicks NBA Fantasy = PTS + REB*1.2 + AST*1.5 + STL*3 + BLK*3 - TO*1
+        statMap['FANTASY'] =
+          (statMap['PTS'] || 0) +
+          (statMap['REB'] || 0) * 1.2 +
+          (statMap['AST'] || 0) * 1.5 +
+          (statMap['STL'] || 0) * 3 +
+          (statMap['BLK'] || 0) * 3 -
+          (statMap['TO'] || 0);
 
         playerStats.set(name.toLowerCase(), statMap);
       }
@@ -122,8 +181,12 @@ function resolveStatKey(statType: string): string {
     'Blocks': 'BLK',
     'Turnovers': 'TO',
     '3-PT Made': '3PM',
-    'Fantasy Score': 'FPTS',
+    '3-Point Made': '3PM',
+    'Fantasy Score': 'FANTASY',
     'Pts+Rebs+Asts': 'PTS+REBS+ASTS',
+    'Pts+Rebs': 'PTS+REBS',
+    'Pts+Asts': 'PTS+ASTS',
+    'Rebs+Asts': 'REBS+ASTS',
     'Blks+Stls': 'BLKS+STLS',
   };
   return map[statType] || statType.toUpperCase();
@@ -163,7 +226,7 @@ export async function checkResults(date: string): Promise<PickResult[]> {
   // Match picks to results
   const results: PickResult[] = [];
   for (const pick of picks) {
-    const stats = allPlayerStats.get(pick.player_name.toLowerCase());
+    const stats = fuzzyMatchPlayer(pick.player_name, allPlayerStats);
     const statKey = resolveStatKey(pick.stat_type);
     const actual = stats?.[statKey] ?? null;
 
@@ -200,10 +263,36 @@ export async function updatePickResults(date: string): Promise<number> {
     WHERE id = ?
   `);
 
+  // Fetch picks metadata so we can feed into calibration table
+  const picks = db.prepare(`
+    SELECT id, player_name, stat_type, line, pick
+    FROM prizepicks_picks
+    WHERE date = ?
+  `).all(date) as Array<{ id: number; player_name: string; stat_type: string; line: number; pick: string }>;
+
   for (const r of results) {
     if (r.actualResult !== null) {
       stmt.run(r.actualResult, r.hit ? 1 : 0, r.pickId);
       updated++;
+
+      // Also record in pick_results for calibration
+      try {
+        const pick = picks.find(p => p.id === r.pickId);
+        if (pick && r.hit !== null) {
+          recordPickResult(
+            date,
+            r.playerName,
+            r.statType,
+            r.pick,
+            0, // edge — not stored in prizepicks_picks, use 0
+            r.line,
+            r.actualResult,
+            r.hit
+          );
+        }
+      } catch (e) {
+        // Ignore duplicate insert errors
+      }
     }
   }
 

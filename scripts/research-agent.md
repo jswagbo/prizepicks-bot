@@ -19,8 +19,8 @@ cd "/Users/jeffnwagbo/prizepicks-bot" && source .env && export THE_ODDS_API_KEY 
 import { getProjections } from './src/prizepicks/prizepicks-client';
 import { getTodaysGames, getPlayerAverages, searchPlayer } from './src/prizepicks/nba-stats-client';
 import { analyzeMatchup } from './src/prizepicks/matchup-analyzer';
-import { scoreProjection, rankProjections, buildParlay } from './src/prizepicks/pick-scorer';
-import { initializeDatabase } from './src/core/db/database';
+import { scoreProjection, rankProjections, buildParlay, savePicks } from './src/prizepicks/pick-scorer';
+import { initializeDatabase, getDatabase } from './src/core/db/database';
 
 initializeDatabase({ path: './data/fund.db' });
 
@@ -91,6 +91,18 @@ initializeDatabase({ path: './data/fund.db' });
 
   // Rank and output
   const ranked = rankProjections(analyzed);
+
+  // Save top 10 picks to database for results tracking
+  const today = new Date().toISOString().split('T')[0];
+  try {
+    const db = getDatabase();
+    db.prepare('DELETE FROM prizepicks_picks WHERE date = ?').run(today);
+    savePicks(today, ranked.slice(0, 10));
+    console.log('Saved', Math.min(10, ranked.length), 'picks to prizepicks_picks for', today);
+  } catch (e) {
+    console.error('Failed to save picks:', (e as Error).message);
+  }
+
   const parlay = buildParlay(ranked.slice(0, 15));
 
   // PP LINE REFERENCE TABLE — use ONLY these values for "PP Line" in the report

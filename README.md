@@ -238,7 +238,38 @@ SQLite at `data/fund.db`. Migrations run automatically on first connection via `
 - `team_defense_rankings` — stat-specific defense ratings per team
 - `team_pace_ratings` — live pace data from NBA.com
 - `line_movements` — tracked line changes over time
-- `pick_results` — historical pick accuracy for hit rate tracking
+- `prizepicks_picks` — daily top picks saved by the pipeline; graded next morning against ESPN box scores
+- `prizepicks_performance` — nightly performance summary per date (total, hits, hit rate)
+- `pick_results` — historical pick accuracy by stat type + edge bucket for calibration
+
+## Picks Tracking
+
+Every time the daily report runs, the top 10 picks are automatically saved to `prizepicks_picks`. The next morning, the results checker grades them against ESPN box scores and updates `hit` / `actual_result`.
+
+**Check today's picks:**
+```bash
+sqlite3 data/fund.db "SELECT player_name, stat_type, line, pick, hit, actual_result FROM prizepicks_picks WHERE date = date('now');"
+```
+
+**View all-time hit rate:**
+```bash
+sqlite3 data/fund.db "SELECT COUNT(*) as total, SUM(hit) as hits, ROUND(100.0*SUM(hit)/COUNT(*),1) as pct FROM prizepicks_picks WHERE hit IS NOT NULL;"
+```
+
+**View hit rate by stat type:**
+```bash
+sqlite3 data/fund.db "SELECT stat_type, COUNT(*) as total, SUM(hit) as hits, ROUND(100.0*SUM(hit)/COUNT(*),1) as pct FROM prizepicks_picks WHERE hit IS NOT NULL GROUP BY stat_type ORDER BY pct DESC;"
+```
+
+**Backfill historical results:**
+```bash
+npx tsx src/scripts/backfill-results.ts
+```
+This reads saved report files from `~/clawd/memory/prizepicks-report-*.md`, inserts picks, and grades them against ESPN.
+
+**Player name matching** uses fuzzy matching (normalized, first-initial + last name, substring fallback) so "Nic Claxton" matches "Nicolas Claxton" in ESPN data.
+
+**Composite stat support:** PRA, Pts+Rebs, Pts+Asts, Rebs+Asts, Blks+Stls, and Fantasy Score (PTS + REB×1.2 + AST×1.5 + STL×3 + BLK×3 − TO) are all computed from ESPN box scores automatically.
 
 ### Stat Mappings
 - "Two Pointers Attempted" = FGA - 3PA
