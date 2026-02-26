@@ -3,7 +3,7 @@
  *
  * Scores PrizePicks projections using Pinnacle-line-driven edge detection.
  *
- * PRIMARY EDGE = Pinnacle (0.35) + Game env (0.15) + Sharp projection (0.25) + Positional defense (0.15)
+ * PRIMARY EDGE = Pinnacle divergence (0.8) + Game environment (0.2)
  *
  * Trailing averages (L3/L5/L10) are kept as CONTEXT only — they are NOT
  * factored into the score. PrizePicks already uses those to set their line.
@@ -97,10 +97,10 @@ const TEAM_ENV_BASE_ADJ = 0.03; // Team totals get 3% boost vs 2% for game total
 // ─── Confidence Mapping ───────────────────────────────────────────────────────
 
 function scoreToConfidence(absScore: number): number {
-  if (absScore >= 0.08) return 5;
-  if (absScore >= 0.05) return 4;
-  if (absScore >= 0.03) return 3;
-  if (absScore >= 0.015) return 2;
+  if (absScore >= 0.12) return 5;
+  if (absScore >= 0.08) return 4;
+  if (absScore >= 0.05) return 3;
+  if (absScore >= 0.02) return 2;
   return 1;
 }
 
@@ -290,7 +290,10 @@ export async function scoreProjection(
     gameEnvAdj += matchup.paceAdjustment * 0.25;
   }
 
-  // (primary edge calculated below after sharp projection + positional defense)
+  // ─── PRIMARY EDGE ─────────────────────────────────────────────────────────
+  const primaryEdge =
+    marketEdge.pinnacleEdge * 0.8 +
+    gameEnvAdj * 0.2;
 
   // ─── Blowout penalty ──────────────────────────────────────────────────────
   let blowoutPenalty = 0;
@@ -380,9 +383,9 @@ export async function scoreProjection(
     );
 
     if (consensus && consensus.expertPicks.length >= 2) {
-      // Preliminary pick direction from Pinnacle edge + game env + injury
+      // Preliminary pick direction from primary edge + injury
       const prelimDirection =
-        marketEdge.pinnacleEdge + gameEnvAdj + injuryBonus > 0 ? 'OVER' : 'UNDER';
+        primaryEdge + injuryBonus > 0 ? 'OVER' : 'UNDER';
 
       const expertAgreePercent =
         prelimDirection === 'OVER' ? consensus.overPercent : consensus.underPercent;
@@ -452,7 +455,7 @@ export async function scoreProjection(
       sharpsContext = `Sharps [${sharpsReport.overallDirection}]: ${signalSummaries.join(', ')}`;
 
       const prelimDirection2 =
-        marketEdge.pinnacleEdge + gameEnvAdj + injuryBonus + expertBonus > 0 ? 'OVER' : 'UNDER';
+        primaryEdge + injuryBonus + expertBonus > 0 ? 'OVER' : 'UNDER';
 
       if (sharpsReport.overallDirection === prelimDirection2) {
         sharpSignal = 'AGREE';
@@ -512,7 +515,7 @@ export async function scoreProjection(
   // ─── Historical hit rate ───────────────────────────────────────────────────
   let hitRateAdjustment = 0;
   const prelimScoreForBucket =
-    marketEdge.pinnacleEdge + gameEnvAdj + injuryBonus + expertBonus + sharpBonus;
+    primaryEdge + injuryBonus + expertBonus + sharpBonus;
   const edgeBucket = edgeToBucket(prelimScoreForBucket);
   const historicalHitRate = getHistoricalHitRate(projection.statType, edgeBucket);
 
@@ -556,30 +559,9 @@ export async function scoreProjection(
     );
   }
 
-  // ─── Sharp projection edge ──────────────────────────────────────────────
-  // Use minutes-adjusted sharp projection if available, else raw sharp projection
-  const sharpLine = minutesAdjustedSharpProjection ?? sharpProjection;
-  const sharpEdge =
-    sharpLine !== null && projection.line !== 0
-      ? (sharpLine - projection.line) / projection.line
-      : 0;
-
-  // ─── PRIMARY EDGE (multi-signal) ──────────────────────────────────────────
-  // Pinnacle edge alone caused only PRA combos to surface (individual stats
-  // match exactly between PP and Pinnacle). Multi-signal approach ensures
-  // picks with strong sharp projections, game environment, or positional
-  // defense signals surface even when Pinnacle shows no edge.
-  const primaryEdge =
-    marketEdge.pinnacleEdge * 0.35 +
-    gameEnvAdj * 0.15 +
-    sharpEdge * 0.25 +
-    positionalDefenseAdj * 0.15;
-
   // ─── Final score ──────────────────────────────────────────────────────────
-  // Note: positionalDefenseAdj is already factored into primaryEdge (0.15 weight)
-  // so we don't add it separately here anymore
   let rawScore =
-    primaryEdge + injuryBonus + expertBonus + sharpBonus + hitRateAdjustment;
+    primaryEdge + injuryBonus + expertBonus + sharpBonus + hitRateAdjustment + positionalDefenseAdj;
 
   // Back-to-back penalty applies to OVER picks
   if (backToBackPenalty > 0 && rawScore > 0) {
