@@ -1,9 +1,17 @@
 /**
  * PrizePicks API Client
- * 
+ *
  * Fetches and parses projections from the PrizePicks API.
  * No API key needed — public endpoint.
+ *
+ * Fallback: If the API returns 403 (PerimeterX block), spawns a
+ * Scrapling-based browser scraper (scripts/fetch-prizepicks.py)
+ * that loads the web app and intercepts projections data.
  */
+
+import { execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import * as path from 'path';
 
 export interface PrizePicksProjection {
   id: string;
@@ -121,26 +129,118 @@ function parseProjections(response: PPApiResponse): PrizePicksProjection[] {
 }
 
 /**
- * Fetch all projections, optionally filtered by league
+ * Resolve the Python interpreter that has Scrapling installed.
+ */
+function findScraplingPython(): string {
+  const projectRoot = path.resolve(__dirname, '..', '..');
+  // Check scrapling-env first (has Scrapling installed), then project venv
+  const candidates = [
+    path.join(process.env.HOME || '~', 'scrapling-env', 'bin', 'python3'),
+    path.join(projectRoot, '.venv', 'bin', 'python3'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return 'python3';
+}
+
+/**
+ * Run the Scrapling-based PrizePicks scraper as a child process.
+ * Returns parsed projections or empty array on failure.
+ */
+function runScraperFallback(): PrizePicksProjection[] {
+  const python = findScraplingPython();
+  const scriptPath = path.resolve(__dirname, '..', '..', 'scripts', 'fetch-prizepicks.py');
+
+  if (!existsSync(scriptPath)) {
+    console.error('[PrizePicks] Scraper script not found:', scriptPath);
+    return [];
+  }
+
+  console.log(`[PrizePicks] API blocked, falling back to browser scraper`);
+  console.log(`[PrizePicks] Running: ${python} ${scriptPath}`);
+
+  try {
+    const stdout = execFileSync(python, [scriptPath], {
+      encoding: 'utf-8',
+      timeout: 120_000, // 2 min — browser launch + page load
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const raw = JSON.parse(stdout.trim());
+
+    // Scraper returns raw API format: {data: [], included: []}
+    if (raw && raw.data && Array.isArray(raw.data)) {
+      const projections = parseProjections(raw as PPApiResponse);
+      console.log(`[PrizePicks] Scraper returned ${projections.length} projections`);
+      return projections;
+    }
+
+    // Legacy format: array of pre-parsed objects
+    if (Array.isArray(raw) && raw.length > 0) {
+      console.log(`[PrizePicks] Scraper returned ${raw.length} projections (legacy format)`);
+      return raw.map((r: Record<string, unknown>) => ({
+        id: String(r.id ?? ''),
+        playerName: String(r.playerName ?? ''),
+        playerId: String(r.playerId ?? ''),
+        team: String(r.team ?? ''),
+        position: String(r.position ?? ''),
+        league: String(r.league ?? 'NBA'),
+        statType: String(r.statType ?? ''),
+        line: Number(r.line ?? 0),
+        startTime: String(r.startTime ?? ''),
+        description: String(r.description ?? ''),
+        isPromo: Boolean(r.isPromo),
+        flashSaleLine: r.flashSaleLine != null ? Number(r.flashSaleLine) : null,
+        projectionType: String(r.projectionType ?? ''),
+        imageUrl: String(r.imageUrl ?? ''),
+        oddsType: String(r.oddsType ?? 'standard'),
+        eventType: String(r.eventType ?? 'team'),
+      }));
+    }
+
+    console.warn('[PrizePicks] Scraper returned no projections');
+    return [];
+  } catch (err) {
+    console.error('[PrizePicks] Scraper failed:', (err as Error).message);
+    return [];
+  }
+}
+
+/**
+ * Fetch all projections, optionally filtered by league.
+ * Falls back to browser scraper if API returns 403 (PerimeterX block).
  */
 export async function getProjections(league?: string): Promise<PrizePicksProjection[]> {
   const url = `${API_BASE}/projections?per_page=250&single_stat=true&game_mode=pickem`;
-  const res = await fetch(url, { headers: HEADERS });
 
-  if (!res.ok) {
-    throw new Error(`PrizePicks API error: ${res.status} ${res.statusText}`);
+  let projections: PrizePicksProjection[];
+
+  try {
+    const res = await fetch(url, { headers: HEADERS });
+
+    if (res.status === 403) {
+      // PerimeterX block — fall back to browser scraper
+      projections = runScraperFallback();
+    } else if (!res.ok) {
+      throw new Error(`PrizePicks API error: ${res.status} ${res.statusText}`);
+    } else {
+      const json = (await res.json()) as PPApiResponse;
+      projections = parseProjections(json);
+
+      // Filter to standard lines only (exclude demon/goblin juiced lines)
+      // and full-game props only (exclude 1H/1Q duration props)
+      const beforeFilter = projections.length;
+      projections = projections.filter(
+        (p) => p.oddsType === 'standard' && p.eventType === 'team'
+      );
+      console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
+    }
+  } catch (err) {
+    // Network error or other fetch failure — try scraper
+    console.warn(`[PrizePicks] API fetch failed: ${(err as Error).message}`);
+    projections = runScraperFallback();
   }
-
-  const json = (await res.json()) as PPApiResponse;
-  let projections = parseProjections(json);
-
-  // Filter to standard lines only (exclude demon/goblin juiced lines)
-  // and full-game props only (exclude 1H/1Q duration props)
-  const beforeFilter = projections.length;
-  projections = projections.filter(
-    (p) => p.oddsType === 'standard' && p.eventType === 'team'
-  );
-  console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
 
   if (league) {
     projections = projections.filter(
