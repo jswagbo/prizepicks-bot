@@ -3,7 +3,7 @@
  *
  * Scores PrizePicks projections using Pinnacle-line-driven edge detection.
  *
- * PRIMARY EDGE = Pinnacle divergence (0.5) + Consensus divergence (0.3) + Game environment (0.2)
+ * PRIMARY EDGE = Pinnacle divergence (0.8) + Game environment (0.2)
  *
  * Trailing averages (L3/L5/L10) are kept as CONTEXT only — they are NOT
  * factored into the score. PrizePicks already uses those to set their line.
@@ -47,7 +47,7 @@ export interface ScoredPick {
   ppLine: number;
   /** Pinnacle line (sharpest sportsbook) */
   pinnacleLine: number | null;
-  /** Average of DK + FD + Pinnacle */
+  /** Consensus line (= Pinnacle, single source) */
   consensusLine: number | null;
   /** (pinnacle_line - pp_line) / pp_line */
   pinnacleEdge: number;
@@ -177,7 +177,7 @@ function isScoringRelatedStat(statType: string): boolean {
  * Score a single projection using Pinnacle-driven edge detection.
  *
  * PRIMARY EDGE:
- *   pinnacle_divergence (×0.5) + consensus_divergence (×0.3) + game_env_adj (×0.2)
+ *   pinnacle_divergence (×0.8) + game_env_adj (×0.2)
  *
  * ADJUSTMENTS (additive):
  *   + expert consensus bonus
@@ -197,8 +197,6 @@ export async function scoreProjection(
     statType: projection.statType,
     ppLine: projection.line,
     pinnacleLine: null,
-    draftKingsLine: null,
-    fanDuelLine: null,
     consensusLine: null,
     pinnacleEdge: 0,
     consensusEdge: 0,
@@ -294,8 +292,7 @@ export async function scoreProjection(
 
   // ─── PRIMARY EDGE ─────────────────────────────────────────────────────────
   const primaryEdge =
-    marketEdge.pinnacleEdge * 0.5 +
-    marketEdge.consensusEdge * 0.3 +
+    marketEdge.pinnacleEdge * 0.8 +
     gameEnvAdj * 0.2;
 
   // ─── Blowout penalty ──────────────────────────────────────────────────────
@@ -638,12 +635,8 @@ export async function scoreProjection(
   reasons.push(...edgeDescriptions);
 
   // If no book data available, note it
-  if (
-    marketEdge.pinnacleLine === null &&
-    marketEdge.draftKingsLine === null &&
-    marketEdge.fanDuelLine === null
-  ) {
-    reasons.push('No book lines available — edge from sharp signals only');
+  if (marketEdge.pinnacleLine === null) {
+    reasons.push('No Pinnacle line available — edge from sharp signals only');
   }
 
   // Game environment — team total takes priority with 2x weight when available

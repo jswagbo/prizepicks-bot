@@ -109,7 +109,7 @@ initializeDatabase({ path: './data/fund.db' });
   console.log('=== PP LINE REFERENCE (authoritative — do NOT use any other source for PP lines) ===');
   for (const pick of ranked.slice(0, 20)) {
     const proj = sampled.find(p => p.playerName === pick.playerName && p.statType === pick.statType);
-    console.log(pick.playerName, '|', pick.statType, '| PP_LINE:', proj?.line, '| Book:', pick.pinnacleLine || pick.consensusLine || 'N/A');
+    console.log(pick.playerName, '|', pick.statType, '| PP_LINE:', proj?.line, '| Pinnacle:', pick.pinnacleLine || 'N/A');
   }
 
   console.log('=== TOP PICKS ===');
@@ -129,9 +129,8 @@ initializeDatabase({ path: './data/fund.db' });
 - [ ] Top picks JSON has non-zero `totalScore`, `ev`, and `confidence` values
 - [ ] Top picks have non-zero `totalScore` (raw score should be visible in output)
 - [ ] **Pinnacle line data:** At least some top picks have non-null `pinnacleLine` (not ALL null — if ALL null, THE_ODDS_API_KEY may be missing or Pinnacle not available for these games; note explicitly)
-- [ ] **consensusLine** present for top picks when DK/FD lines are available
 - [ ] **vegasTotal** is non-null for at least some games (confirms fetchGameTotals is working)
-- [ ] `pinnacleEdge` and `consensusEdge` are non-zero for picks with Pinnacle data
+- [ ] `pinnacleEdge` is non-zero for picks with Pinnacle data
 - [ ] **Combo stat markets:** At least some picks have combo stats (Pts+Rebs, Rebs+Asts, Blks+Stls, etc.) with non-null Pinnacle lines — if ALL combo stats show null Pinnacle, the extended market list may not be loading
 - [ ] **Team totals loaded:** At least some picks show `Team total: X.X` in reasoning (not just `Vegas total`) — confirms `fetchTeamTotals()` is working; if all show `Vegas total` fallback, check THE_ODDS_API_KEY and team_totals market availability
 
@@ -178,7 +177,6 @@ Format as a Telegram message:
 For each pick:
 **1. [Player] — [Stat] [OVER/UNDER] [Line]**
 • Pinnacle: [X.X] vs PP [Y.Y] → [+Z%] edge
-• Book consensus: DK [X] / FD [X] / Pinnacle [X] = avg [X] vs PP [Y]
 • Vegas total: [X] ([high/low/neutral]) → [scoring OVER/UNDER boosted or N/A]
 • Dimers projection: [X] ([agrees/conflicts with OVER/UNDER])
 • Raw score: [totalScore] | EV: [ev]
@@ -222,7 +220,7 @@ Do NOT write an "executive summary" and refer to the saved file. The reply IS th
 
 ## FINAL QUALITY CHECK
 **⚠️ PP LINE CROSS-CHECK (CRITICAL):**
-Before publishing, verify EVERY pick's PP line in the report matches the "PP LINE REFERENCE" table from Step 1 output. The PP line is what PrizePicks shows — NOT the Pinnacle/DK/FD line. If you wrote "PP 23.5" but the reference table says "PP_LINE: 19.5", your report is WRONG. Fix it before sending. This is the #1 source of errors.
+Before publishing, verify EVERY pick's PP line in the report matches the "PP LINE REFERENCE" table from Step 1 output. The PP line is what PrizePicks shows — NOT the Pinnacle line. If you wrote "PP 23.5" but the reference table says "PP_LINE: 19.5", your report is WRONG. Fix it before sending. This is the #1 source of errors.
 
 Before sending, verify:
 - [ ] Every pick has Pinnacle edge shown (or "Pinnacle N/A" if no data — explain why)

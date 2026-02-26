@@ -1,7 +1,7 @@
 /**
  * Odds Service — Unified Player Props & Spreads Fetcher
  *
- * Primary: The Odds API (the-odds-api.com) — includes DK, FD, Pinnacle lines
+ * Primary: The Odds API (the-odds-api.com) — Pinnacle lines only
  * Fallback: odds-api.io (existing ODDS_API_KEY)
  *
  * Caches results for 30 minutes to avoid hammering APIs.
@@ -10,7 +10,7 @@
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface BookLine {
-  book: string;           // "DraftKings" | "FanDuel" | "Pinnacle"
+  book: string;           // "Pinnacle"
   playerName: string;
   statType: string;       // "Points", "Rebounds", "Assists", etc.
   line: number;           // e.g. 22.5
@@ -82,7 +82,7 @@ interface TheOddsApiEvent {
 // ─── Primary: The Odds API (the-odds-api.com) ───────────────────────────────
 
 async function fetchTheOddsApiProps(
-  bookmakers: string = 'draftkings,fanduel,pinnacle'
+  bookmakers: string = 'pinnacle'
 ): Promise<BookLine[]> {
   const apiKey = process.env.THE_ODDS_API_KEY;
   if (!apiKey) {
@@ -228,7 +228,7 @@ async function fetchOddsApiIoProps(): Promise<BookLine[]> {
         const oddsRes = await fetch(
           `https://api.odds-api.io/v3/odds?sport=basketball&league=usa-nba` +
           `&eventId=${event.id}&oddsType=player_props` +
-          `&bookmakers=DraftKings,FanDuel&apiKey=${apiKey}`
+          `&bookmakers=Pinnacle&apiKey=${apiKey}`
         );
         if (!oddsRes.ok) continue;
 
@@ -313,8 +313,8 @@ export async function fetchPlayerProps(): Promise<BookLine[]> {
     return playerPropsCache.data;
   }
 
-  // Primary: The Odds API (includes DK, FD, Pinnacle)
-  let lines = await fetchTheOddsApiProps('draftkings,fanduel');
+  // Primary: The Odds API (Pinnacle only)
+  let lines = await fetchTheOddsApiProps('pinnacle');
 
   if (lines.length === 0) {
     console.log('[Odds] The Odds API returned 0 lines, falling back to odds-api.io...');
@@ -348,7 +348,7 @@ export async function fetchGameSpreads(): Promise<Map<string, number>> {
   if (theOddsKey) {
     try {
       const res = await fetch(
-        `https://api.the-odds-api.com/v4/sports/basketball_nba/odds?apiKey=${theOddsKey}&regions=us&markets=spreads&bookmakers=draftkings,pinnacle`
+        `https://api.the-odds-api.com/v4/sports/basketball_nba/odds?apiKey=${theOddsKey}&regions=us,eu&markets=spreads&bookmakers=pinnacle`
       );
       if (res.ok) {
         const data = await res.json() as any[];
@@ -401,7 +401,7 @@ export async function fetchGameTotals(): Promise<Map<string, number>> {
   try {
     const res = await fetch(
       `https://api.the-odds-api.com/v4/sports/basketball_nba/odds` +
-        `?apiKey=${theOddsKey}&regions=us&markets=totals&bookmakers=draftkings,pinnacle`
+        `?apiKey=${theOddsKey}&regions=us,eu&markets=totals&bookmakers=pinnacle`
     );
 
     if (res.ok) {
@@ -490,7 +490,7 @@ export async function fetchTeamTotals(): Promise<Map<string, number>> {
       try {
         const res = await fetch(
           `https://api.the-odds-api.com/v4/sports/basketball_nba/events/${event.id}/odds` +
-            `?apiKey=${theOddsKey}&regions=us&markets=team_totals&bookmakers=draftkings,pinnacle`
+            `?apiKey=${theOddsKey}&regions=us,eu&markets=team_totals&bookmakers=pinnacle`
         );
         if (!res.ok) {
           console.log(`[Odds] Team totals event ${event.id} HTTP ${res.status}`);

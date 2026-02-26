@@ -1,12 +1,12 @@
 /**
- * Market Edge — Multi-book consensus engine
+ * Market Edge — Pinnacle-only edge engine
  *
- * Primary edge signal: Pinnacle line vs PrizePicks line.
+ * Edge signal: Pinnacle line vs PrizePicks line.
  * Pinnacle is the sharpest sportsbook — if their line diverges from PP,
  * that's a real market mispricing.
  */
 
-import { fetchPlayerProps, fetchPinnacleLines, fetchTeamTotals, type BookLine } from './odds-service';
+import { fetchPinnacleLines, fetchTeamTotals, type BookLine } from './odds-service';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -16,11 +16,7 @@ export interface MarketEdge {
   ppLine: number;
   /** Pinnacle line — sharpest single source */
   pinnacleLine: number | null;
-  /** DraftKings line */
-  draftKingsLine: number | null;
-  /** FanDuel line */
-  fanDuelLine: number | null;
-  /** Average of DK + FD + Pinnacle (whichever are available) */
+  /** Consensus line = Pinnacle line (single source) */
   consensusLine: number | null;
   /**
    * (pinnacle_line - pp_line) / pp_line
@@ -29,9 +25,7 @@ export interface MarketEdge {
    */
   pinnacleEdge: number;
   /**
-   * (consensus_line - pp_line) / pp_line
-   * Positive = consensus is HIGHER than PP → OVER edge
-   * Negative = consensus is LOWER than PP → UNDER edge
+   * Same as pinnacleEdge (Pinnacle is the only source)
    */
   consensusEdge: number;
   /** Vegas expected scoring total for this player's team (from team_totals market) */
@@ -131,10 +125,10 @@ function findBookLine(
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Compute multi-book market edge for a player vs their PrizePicks line.
+ * Compute Pinnacle market edge for a player vs their PrizePicks line.
  *
- * Fetches lines from all books via fetchPlayerProps() and fetchPinnacleLines(),
- * computes Pinnacle edge and book consensus edge.
+ * Fetches Pinnacle lines via fetchPinnacleLines(),
+ * computes edge as (Pinnacle - PP) / PP.
  *
  * @param team - Optional team name to look up team totals (e.g. "Lakers", "Los Angeles Lakers")
  */
@@ -144,45 +138,30 @@ export async function getMarketEdge(
   ppLine: number,
   team?: string
 ): Promise<MarketEdge> {
-  const [allLines, pinnacleLines, teamTotalsMap] = await Promise.all([
-    fetchPlayerProps().catch((): BookLine[] => []),
+  const [pinnacleLines, teamTotalsMap] = await Promise.all([
     fetchPinnacleLines().catch((): BookLine[] => []),
     fetchTeamTotals().catch((): Map<string, number> => new Map()),
   ]);
 
-  const draftKingsLine = findBookLine(allLines, playerName, statType, 'DraftKings');
-  const fanDuelLine = findBookLine(allLines, playerName, statType, 'FanDuel');
   const pinnacleLine = findBookLine(pinnacleLines, playerName, statType);
 
   // Team total lookup
   const teamTotal = team ? findTeamTotal(teamTotalsMap, team) : null;
 
-  // Consensus = average of available: DK, FD, Pinnacle
-  const components: number[] = [];
-  if (draftKingsLine !== null) components.push(draftKingsLine);
-  if (fanDuelLine !== null) components.push(fanDuelLine);
-  if (pinnacleLine !== null) components.push(pinnacleLine);
-
-  const consensusLine =
-    components.length > 0
-      ? Math.round((components.reduce((s, v) => s + v, 0) / components.length) * 10) / 10
-      : null;
+  // Consensus = Pinnacle (only source)
+  const consensusLine = pinnacleLine;
 
   const pinnacleEdge =
     pinnacleLine !== null && ppLine !== 0
       ? Math.round(((pinnacleLine - ppLine) / ppLine) * 10000) / 10000
       : 0;
 
-  const consensusEdge =
-    consensusLine !== null && ppLine !== 0
-      ? Math.round(((consensusLine - ppLine) / ppLine) * 10000) / 10000
-      : 0;
+  // consensusEdge = pinnacleEdge since Pinnacle is the only source
+  const consensusEdge = pinnacleEdge;
 
   console.log(
     `[MarketEdge] ${playerName} ${statType}: PP ${ppLine} | ` +
       `Pinnacle ${pinnacleLine ?? 'N/A'} (${(pinnacleEdge * 100).toFixed(1)}%) | ` +
-      `DK ${draftKingsLine ?? 'N/A'} | FD ${fanDuelLine ?? 'N/A'} | ` +
-      `Consensus ${consensusLine ?? 'N/A'} (${(consensusEdge * 100).toFixed(1)}%) | ` +
       `Team Total ${teamTotal ?? 'N/A'}`
   );
 
@@ -191,8 +170,6 @@ export async function getMarketEdge(
     statType,
     ppLine,
     pinnacleLine,
-    draftKingsLine,
-    fanDuelLine,
     consensusLine,
     pinnacleEdge,
     consensusEdge,
@@ -211,18 +188,6 @@ export function describeMarketEdge(edge: MarketEdge): string[] {
     const sign = edge.pinnacleEdge >= 0 ? '+' : '';
     parts.push(
       `Pinnacle ${edge.pinnacleLine} vs PP ${edge.ppLine} → ${sign}${pct}% edge`
-    );
-  }
-
-  if (edge.consensusLine !== null) {
-    const bookParts: string[] = [];
-    if (edge.draftKingsLine !== null) bookParts.push(`DK ${edge.draftKingsLine}`);
-    if (edge.fanDuelLine !== null) bookParts.push(`FD ${edge.fanDuelLine}`);
-    if (edge.pinnacleLine !== null) bookParts.push(`Pinnacle ${edge.pinnacleLine}`);
-    const pct = (edge.consensusEdge * 100).toFixed(1);
-    const sign = edge.consensusEdge >= 0 ? '+' : '';
-    parts.push(
-      `Book consensus: ${bookParts.join(' / ')} = avg ${edge.consensusLine} vs PP ${edge.ppLine} (${sign}${pct}%)`
     );
   }
 
