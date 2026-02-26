@@ -227,20 +227,21 @@ export async function getProjections(league?: string): Promise<PrizePicksProject
     } else {
       const json = (await res.json()) as PPApiResponse;
       projections = parseProjections(json);
-
-      // Filter to standard lines only (exclude demon/goblin juiced lines)
-      // and full-game props only (exclude 1H/1Q duration props)
-      const beforeFilter = projections.length;
-      projections = projections.filter(
-        (p) => p.oddsType === 'standard' && p.eventType === 'team'
-      );
-      console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
     }
   } catch (err) {
     // Network error or other fetch failure — try scraper
     console.warn(`[PrizePicks] API fetch failed: ${(err as Error).message}`);
     projections = runScraperFallback();
   }
+
+  // Filter to standard lines only (exclude demon/goblin juiced lines)
+  // and full-game props only (exclude 1H/1Q duration props)
+  // IMPORTANT: This runs on ALL paths (API, scraper fallback, error fallback)
+  const beforeFilter = projections.length;
+  projections = projections.filter(
+    (p) => p.oddsType === 'standard' && p.eventType === 'team'
+  );
+  console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
 
   if (league) {
     projections = projections.filter(
