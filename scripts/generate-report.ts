@@ -156,21 +156,28 @@ async function main() {
     report.push('');
   });
 
-  // Line divergences — sorted by absolute Pinnacle edge
-  const withEdge = picks
-    .filter((p) => p.pinnacle_line !== null && p.pinnacle_edge !== null && p.pinnacle_edge !== 0)
-    .sort((a, b) => Math.abs(b.pinnacle_edge!) - Math.abs(a.pinnacle_edge!));
+  // Top 10 Pinnacle Divergences — always shown, queries all picks for today
+  const allPicks = db.prepare(`
+    SELECT * FROM prizepicks_picks
+    WHERE date = ? AND pinnacle_line IS NOT NULL AND pinnacle_edge IS NOT NULL
+    ORDER BY ABS(pinnacle_edge) DESC
+    LIMIT 10
+  `).all(date) as DBPick[];
 
-  if (withEdge.length > 0) {
-    report.push(`## Top Line Divergences (Pinnacle vs PrizePicks)\n`);
-    for (const p of withEdge.slice(0, 10)) {
+  report.push(`## Top 10 Pinnacle Divergences\n`);
+  if (allPicks.length === 0) {
+    report.push(`_No picks with Pinnacle data for ${date}._`);
+  } else {
+    report.push(`| # | Player | Stat | PP Line | Pinnacle | Edge | Pick |`);
+    report.push(`|---|--------|------|---------|----------|------|------|`);
+    allPicks.forEach((p, i) => {
       const dir = p.pinnacle_edge! > 0 ? 'OVER' : 'UNDER';
       report.push(
-        `- ${p.player_name} — ${p.stat_type}: Pinnacle ${p.pinnacle_line} vs PP ${p.line} -> ${edgePercent(p.pinnacle_edge)} ${dir} edge`
+        `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pinnacle_line} | ${edgePercent(p.pinnacle_edge)} | ${dir} |`
       );
-    }
-    report.push('');
+    });
   }
+  report.push('');
 
   // Performance stats (last 7 days)
   try {

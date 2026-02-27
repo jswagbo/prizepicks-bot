@@ -128,15 +128,24 @@ async function main() {
     throw new Error('No projections scored — pipeline failed');
   }
 
-  // 6. Rank
-  const ranked = rankProjections(analyzed);
+  // 5b. Filter to picks with Pinnacle data
+  const withPinnacle = analyzed.filter((p) => p.pinnacleLine !== null && p.pinnacleLine !== undefined);
+  console.error(`Pinnacle data: ${withPinnacle.length}/${analyzed.length} scored picks have Pinnacle lines`);
+
+  if (withPinnacle.length === 0) {
+    throw new Error('No picks with Pinnacle data — cannot rank');
+  }
+
+  // 6. Rank (only Pinnacle-backed picks)
+  const ranked = rankProjections(withPinnacle);
 
   // 7. Save top N to database
   const today = new Date().toISOString().split('T')[0];
   const db = getDatabase();
   db.prepare('DELETE FROM prizepicks_picks WHERE date = ?').run(today);
-  savePicks(today, ranked.slice(0, TOP_N));
-  console.error(`Saved ${Math.min(TOP_N, ranked.length)} picks to DB for ${today}`);
+  const toSave = ranked.slice(0, TOP_N);
+  savePicks(today, toSave);
+  console.error(`Saved ${toSave.length} picks to DB for ${today}`);
 
   // 8. Validate DB save
   const savedCount = (
