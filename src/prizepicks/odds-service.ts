@@ -7,7 +7,11 @@
  * Caches results for 30 minutes to avoid hammering APIs.
  */
 
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+
+// Load .env from repo root regardless of cwd
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
