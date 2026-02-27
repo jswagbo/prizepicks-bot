@@ -12,6 +12,11 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
+// Redirect ALL console output to stderr so stdout is reserved for JSON only.
+// Imported modules (odds-service, nba-stats, etc.) may use console.log internally.
+const _origLog = console.log;
+console.log = (...args: unknown[]) => console.error(...args);
+
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 import { getProjections } from '../src/prizepicks/prizepicks-client';
@@ -196,7 +201,7 @@ async function main() {
     },
   };
 
-  console.log(JSON.stringify(summary, null, 2));
+  process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
 }
 
 main()

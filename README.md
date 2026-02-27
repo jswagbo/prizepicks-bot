@@ -68,23 +68,30 @@ The bot searches for the scrapling venv in: `./scrapling-env/`, `~/.scrapling-en
 
 ## How to Run
 
-```bash
-# Generate today's report
-npm run report
+The pipeline consists of three standalone scripts that can be run independently or chained:
 
-# The report is written to:
-# ./reports/prizepicks-report-YYYY-MM-DD.md
+```bash
+# 1. Run the daily pipeline — fetches, scores, and saves top 10 Pinnacle-backed picks
+npx tsx scripts/daily-pipeline.ts            # JSON summary → stdout, diagnostics → stderr
+npx tsx scripts/daily-pipeline.ts > out.json # capture JSON, see diagnostics in terminal
+
+# 2. Generate a human-readable report from saved picks
+npx tsx scripts/generate-report.ts           # defaults to today
+npx tsx scripts/generate-report.ts 2026-02-27
+
+# 3. Check results against ESPN box scores (run next morning)
+npx tsx scripts/check-results.ts             # defaults to yesterday
+npx tsx scripts/check-results.ts 2026-02-27
 ```
 
-Pipeline steps:
+Pipeline steps (daily-pipeline.ts):
 1. Fetches today's PrizePicks NBA projections (standard lines only)
-2. Fetches spreads and totals from The Odds API (DraftKings primary)
-3. Loads defense rankings and pace data from SQLite cache
-4. Pulls injury reports from ESPN
-5. Scrapes expert picks from Covers, OddsShark, Action Network
-6. Scores each projection through the multi-factor model
-7. Fetches Pinnacle lines for top candidates
-8. Generates a markdown report saved to `./reports/`
+2. Fetches spreads, totals, and team totals from The Odds API
+3. Analyzes matchups — defense grades, pace, EWMA, minutes projection
+4. Scores each projection through the Pinnacle-driven scoring model
+5. Filters to Pinnacle-backed picks only (no picks without sharp market data)
+6. Ranks by edge, saves top 10 to database (dedupes on re-run)
+7. Outputs JSON summary to stdout
 
 ## Example Output
 
@@ -113,22 +120,31 @@ Pipeline steps:
 
 ## Architecture
 
+Three standalone scripts form a deterministic, cron-friendly pipeline:
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        run-report.ts                             │
-│                 (orchestrates full pipeline)                      │
-├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│PrizePicks│ NBA Stats│  Matchup │  Injury  │  Sharps  │  Market  │
-│  Client  │  Client  │ Analyzer │  Client  │  Intel   │  Edge    │
-│  (API)   │ (Python) │(Pace+B2B)│  (ESPN)  │ (Multi)  │(Pinnacle)│
-├──────────┴──────────┴──────────┴──────────┴──────────┴──────────┤
-│                          Pick Scorer                             │
-│     (Pinnacle-driven edge + consensus + game environment)         │
+┌──────────────────────────────────────────────────────────────────┐
+│                   scripts/daily-pipeline.ts                       │
+│     Fetch → Score → Filter (Pinnacle only) → Rank → Save         │
+│          stdout: JSON summary  │  stderr: diagnostics             │
+├──────────────────────────────────────────────────────────────────┤
+│                   scripts/generate-report.ts                      │
+│     Read DB picks → Format markdown report → stdout + file        │
+├──────────────────────────────────────────────────────────────────┤
+│                   scripts/check-results.ts                        │
+│     Fetch ESPN box scores → Grade picks → Update DB → Scorecard   │
+├──────────┬──────────┬──────────┬──────────┬──────────┬───────────┤
+│PrizePicks│ NBA Stats│  Matchup │  Odds    │  Market  │  Results  │
+│  Client  │  Client  │ Analyzer │ Service  │  Edge    │  Tracker  │
+│  (API)   │ (Python) │(Pace+B2B)│(the-odds)│(Pinnacle)│  (ESPN)   │
+├──────────┴──────────┴──────────┴──────────┴──────────┴───────────┤
+│                          Pick Scorer                              │
+│      Pinnacle-driven edge + consensus + game environment          │
 ├──────────┬──────────┬───────────┬───────────┬────────────────────┤
 │  Sharp   │  Vegas   │  Hit Rate │  Blowout  │   B2B              │
 │  Projs   │  Totals  │  Tracking │  Penalty  │   Penalty          │
 ├──────────┴──────────┴───────────┴───────────┴────────────────────┤
-│                    SQLite DB (data/fund.db)                       │
+│                    SQLite DB (data/fund.db)                        │
 │   game logs • defense rankings • pace • pick history              │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -212,7 +228,9 @@ Injured players lose 1 star (Day-To-Day) or 2 stars (Questionable/Doubtful) and 
 
 | File | Purpose |
 |------|---------|
-| `run-report.ts` | Main entry — orchestrates full pipeline and generates report |
+| `scripts/daily-pipeline.ts` | **Daily pipeline** — fetch, score, filter, rank, save top 10 picks |
+| `scripts/generate-report.ts` | **Report generator** — reads DB picks, outputs markdown analysis |
+| `scripts/check-results.ts` | **Results checker** — grades picks against ESPN box scores |
 | `seed-gamelogs.ts` | Pre-seeds game log cache for all active players |
 | `src/prizepicks/prizepicks-client.ts` | Fetches projections from PrizePicks API |
 | `src/prizepicks/nba-stats-client.ts` | Player game logs, defense rankings, pace (ESPN + nba_api) |
@@ -225,15 +243,14 @@ Injured players lose 1 star (Day-To-Day) or 2 stars (Questionable/Doubtful) and 
 | `src/prizepicks/odds-service.ts` | Unified odds fetcher — player props + spreads + totals |
 | `src/prizepicks/sharps-intel.ts` | Pinnacle lines, expert cappers, line movement |
 | `src/core/db/database.ts` | SQLite connection + auto-migrations |
-| `src/core/db/schema.ts` | DB schema (v6) — game logs, defense, pace, picks |
+| `src/core/db/schema.ts` | DB schema (v7) — game logs, defense, pace, picks, market data |
 | `scripts/nba-stats.py` | Python bridge for nba_api calls |
-| `scripts/research-agent.md` | OpenClaw automation prompt (not needed for manual use) |
 
 ## Database
 
 SQLite at `data/fund.db`. Migrations run automatically on first connection via `getDatabase()`.
 
-**Current schema (v6):**
+**Current schema (v7):**
 - `player_game_logs` — cached game logs with full shooting stats (FGA, 3PA, FTA, FTM, FGM)
 - `team_defense_rankings` — stat-specific defense ratings per team
 - `team_pace_ratings` — live pace data from NBA.com
@@ -244,7 +261,7 @@ SQLite at `data/fund.db`. Migrations run automatically on first connection via `
 
 ## Picks Tracking
 
-Every time the daily report runs, the top 10 picks are automatically saved to `prizepicks_picks`. The next morning, the results checker grades them against ESPN box scores and updates `hit` / `actual_result`.
+Every time `daily-pipeline.ts` runs, the top 10 Pinnacle-backed picks are saved to `prizepicks_picks` (deduped on re-run). The next morning, `check-results.ts` grades them against ESPN box scores and updates `hit` / `actual_result`.
 
 **Check today's picks:**
 ```bash
