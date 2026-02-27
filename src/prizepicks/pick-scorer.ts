@@ -833,8 +833,9 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
     INSERT INTO prizepicks_picks 
     (date, player_name, team, opponent, league, stat_type, line, pick,
      confidence, ev_estimate, reasoning, last5_avg, last10_avg, season_avg,
-     matchup_grade, home_away)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     matchup_grade, home_away, pinnacle_line, pinnacle_edge, sharp_projection,
+     vegas_total, team_total, game_spread)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertAll = db.transaction((rows: ScoredPick[]) => {
@@ -855,7 +856,13 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
         p.matchup.last10Avg,
         p.matchup.seasonAvg,
         p.matchup.matchupGrade,
-        p.matchup.homeAway
+        p.matchup.homeAway,
+        p.pinnacleLine,
+        p.pinnacleEdge,
+        p.sharpProjection,
+        p.vegasTotal,
+        (p as any).matchup?.teamTotal ?? null,
+        p.matchup.gameSpread ?? null
       );
     }
   });
@@ -888,9 +895,9 @@ export function recordPickResult(
 
   db.prepare(`
     INSERT INTO pick_results 
-    (date, player_name, stat_type, pick_direction, edge_bucket, hit, line, actual_result)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(date, playerName, statType, pickDirection, edgeBucketVal, hit ? 1 : 0, line, actualResult);
+    (date, player_name, stat_type, pick_direction, edge_bucket, hit, line, actual_result, pinnacle_edge)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(date, playerName, statType, pickDirection, edgeBucketVal, hit ? 1 : 0, line, actualResult, edge);
 
   console.log(
     `[Hit Rate] Recorded ${playerName} ${statType} ${pickDirection}: ` +
