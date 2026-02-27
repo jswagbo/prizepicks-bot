@@ -7,6 +7,8 @@
  * Caches results for 30 minutes to avoid hammering APIs.
  */
 
+import 'dotenv/config';
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface BookLine {

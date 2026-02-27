@@ -241,7 +241,7 @@ function resolveStatKey(statType: string): string {
 export async function checkResults(date: string): Promise<PickResult[]> {
   const db = getDatabase();
 
-  // Get our picks for this date
+  // Get unresolved picks for this date
   const picks = db.prepare(`
     SELECT id, player_name, stat_type, line, pick, league
     FROM prizepicks_picks
@@ -251,7 +251,27 @@ export async function checkResults(date: string): Promise<PickResult[]> {
     line: number; pick: string; league: string;
   }>;
 
-  if (picks.length === 0) return [];
+  // If all picks already resolved, return them so the cron can still report a scorecard
+  if (picks.length === 0) {
+    const resolved = db.prepare(`
+      SELECT id, player_name, stat_type, line, pick, actual_result, hit
+      FROM prizepicks_picks
+      WHERE date = ?
+    `).all(date) as Array<{
+      id: number; player_name: string; stat_type: string;
+      line: number; pick: string; actual_result: number | null; hit: number | null;
+    }>;
+
+    return resolved.map(r => ({
+      pickId: r.id,
+      playerName: r.player_name,
+      statType: r.stat_type,
+      line: r.line,
+      pick: r.pick as 'OVER' | 'UNDER',
+      actualResult: r.actual_result,
+      hit: r.hit !== null ? r.hit === 1 : null,
+    }));
+  }
 
   // Fetch box scores for the date AND next day (evening games show up on next day in ESPN)
   const nextDate = new Date(date + 'T12:00:00Z');
@@ -313,10 +333,10 @@ export async function updatePickResults(date: string): Promise<number> {
 
   // Fetch picks metadata so we can feed into calibration table
   const picks = db.prepare(`
-    SELECT id, player_name, stat_type, line, pick
+    SELECT id, player_name, stat_type, line, pick, pinnacle_edge
     FROM prizepicks_picks
     WHERE date = ?
-  `).all(date) as Array<{ id: number; player_name: string; stat_type: string; line: number; pick: string }>;
+  `).all(date) as Array<{ id: number; player_name: string; stat_type: string; line: number; pick: string; pinnacle_edge: number | null }>;
 
   for (const r of results) {
     if (r.actualResult !== null) {
@@ -332,7 +352,7 @@ export async function updatePickResults(date: string): Promise<number> {
             r.playerName,
             r.statType,
             r.pick,
-            0, // edge — not stored in prizepicks_picks, use 0
+            pick.pinnacle_edge ?? 0,
             r.line,
             r.actualResult,
             r.hit

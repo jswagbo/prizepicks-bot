@@ -138,6 +138,8 @@ export async function getMarketEdge(
   ppLine: number,
   team?: string
 ): Promise<MarketEdge> {
+  console.log(`[MarketEdge] Looking up: ${playerName} | ${statType}`);
+
   const [pinnacleLines, teamTotalsMap] = await Promise.all([
     fetchPinnacleLines().catch((): BookLine[] => []),
     fetchTeamTotals().catch((): Map<string, number> => new Map()),

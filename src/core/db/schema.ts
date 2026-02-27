@@ -5,7 +5,7 @@
  * Run migrations via: npm run db:migrate
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const CREATE_TABLES_SQL = `
 -- =============================================================================
@@ -470,7 +470,13 @@ CREATE TABLE IF NOT EXISTS prizepicks_picks (
   hit INTEGER,
   in_parlay INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  resolved_at TEXT
+  resolved_at TEXT,
+  pinnacle_line REAL,
+  pinnacle_edge REAL,
+  sharp_projection REAL,
+  vegas_total REAL,
+  team_total REAL,
+  game_spread REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_picks_date ON prizepicks_picks(date);
