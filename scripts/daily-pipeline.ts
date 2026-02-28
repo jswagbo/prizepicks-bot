@@ -122,7 +122,7 @@ async function main() {
   }
 
   // 5b. Filter to picks with Pinnacle data
-  const withPinnacle = analyzed.filter((p) => p.pinnacleLine !== null);
+  const withPinnacle = analyzed.filter((p) => p.pinnacleLine !== null && p.pinnacleEdge !== 0);
   console.error(`Pinnacle data: ${withPinnacle.length}/${analyzed.length} scored picks have Pinnacle lines`);
 
   if (withPinnacle.length === 0) {
