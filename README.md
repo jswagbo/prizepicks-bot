@@ -209,3 +209,24 @@ sqlite3 data/fund.db "SELECT COUNT(*) as total, SUM(hit) as hits, ROUND(100.0*SU
 ## License
 
 MIT
+
+### Best Play of the Day
+
+The report includes an optimal PrizePicks entry recommendation based on available Pinnacle-edge picks:
+
+| Edge Picks | Play Type | Payout | Break-Even |
+|-----------|-----------|--------|------------|
+| 6+ | 6-Man Flex | Up to 25x | 54.25% |
+| 5 | 5-Man Flex | Up to 10x | 54.25% |
+| 4 | 4-Man Power | 10x | 56.2% |
+| 3 | 3-Man Power | 5x | 58.5% |
+| 2 | 2-Man Power | 3x | 57.7% |
+
+### Covers Tracking
+
+The `covers_flag` column in `prizepicks_picks` records whether a Covers.com expert agreed or contradicted each pick. Query to analyze correlation:
+
+```sql
+SELECT covers_flag, COUNT(*) as n, ROUND(AVG(hit) * 100, 1) as hit_pct
+FROM prizepicks_picks WHERE covers_flag IS NOT NULL GROUP BY covers_flag;
+```
