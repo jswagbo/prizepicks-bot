@@ -28,6 +28,7 @@ import {
   resetPinnacleCache,
   type ScoredPick,
 } from '../src/prizepicks/pick-scorer';
+import { getCoversExpertPicks, checkCoversAlignment } from '../src/prizepicks/covers-intel';
 import { initializeDatabase, getDatabase } from '../src/core/db/database';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -130,6 +131,29 @@ async function main() {
 
   // 6. Rank by absolute Pinnacle edge
   const ranked = rankProjections(withPinnacle);
+
+  // 6b. Annotate with Covers.com expert alignment
+  console.error("Fetching Covers.com expert picks for annotation...");
+  try {
+    await getCoversExpertPicks(); // pre-fetch + cache
+    for (const pick of ranked) {
+      try {
+        const alignment = await checkCoversAlignment(
+          pick.projection.playerName,
+          pick.projection.statType,
+          pick.pick
+        );
+        if (alignment) {
+          pick.coversFlag = alignment.agrees ? "agrees" as const : "contradicts" as const;
+        }
+      } catch { /* non-fatal */ }
+    }
+    const agrees = ranked.filter(p => p.coversFlag === "agrees").length;
+    const contradicts = ranked.filter(p => p.coversFlag === "contradicts").length;
+    console.error(`Covers annotations: ${agrees} agrees, ${contradicts} contradicts`);
+  } catch (err) {
+    console.error("Covers fetch failed (non-fatal):", err instanceof Error ? err.message : err);
+  }
 
   // 7. Save top N to database
   const today = new Date().toISOString().split('T')[0];

@@ -29,6 +29,8 @@ export interface ScoredPick {
   pinnacleEdge: number;
   /** Opponent team (for report/parlay dedup) */
   opponent: string;
+  /** Covers.com expert alignment: agrees, contradicts, or null */
+  coversFlag?: 'agrees' | 'contradicts' | null;
 }
 
 export interface ParlayPick {
@@ -218,8 +220,8 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
     (date, player_name, team, opponent, league, stat_type, line, pick,
      confidence, ev_estimate, reasoning, last5_avg, last10_avg, season_avg,
      matchup_grade, home_away, pinnacle_line, pinnacle_edge, sharp_projection,
-     vegas_total, team_total, game_spread)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     vegas_total, team_total, game_spread, covers_flag)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertAll = db.transaction((rows: ScoredPick[]) => {
@@ -246,7 +248,8 @@ export function savePicks(date: string, picks: ScoredPick[]): void {
         null, // sharp_projection — removed
         null, // vegas_total — removed from scoring
         null, // team_total
-        null  // game_spread
+        null, // game_spread
+        p.coversFlag || null // covers_flag
       );
     }
   });
