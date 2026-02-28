@@ -112,7 +112,7 @@ async function main() {
         COUNT(*) as total,
         SUM(CASE WHEN hit = 1 THEN 1 ELSE 0 END) as hits
       FROM prizepicks_picks
-      WHERE hit IS NOT NULL
+      WHERE hit IS NOT NULL AND pinnacle_line IS NOT NULL
     `).get() as { total: number; hits: number };
 
     if (allTime.total > 0) {
