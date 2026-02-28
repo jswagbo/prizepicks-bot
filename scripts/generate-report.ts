@@ -179,6 +179,65 @@ async function main() {
   }
   report.push('');
 
+
+  // ─── Best Play of the Day ─────────────────────────────────────────────────
+  // Uses Pinnacle-edge picks to recommend the optimal PrizePicks entry
+  const edgePicks = db.prepare(`
+    SELECT * FROM prizepicks_picks
+    WHERE date = ? AND pinnacle_edge IS NOT NULL AND pinnacle_edge != 0
+    ORDER BY ABS(pinnacle_edge) DESC
+  `).all(date) as DBPick[];
+
+  report.push(`## 🎯 Best Play of the Day\n`);
+
+  if (edgePicks.length === 0) {
+    report.push(`_No Pinnacle-edge picks available. No recommended play._\n`);
+  } else {
+    let playType: string;
+    let playPicks: DBPick[];
+    let payout: string;
+    let breakEven: string;
+
+    if (edgePicks.length >= 6) {
+      playType = '6-Man Flex';
+      playPicks = edgePicks.slice(0, 6);
+      payout = 'Up to 25x';
+      breakEven = '54.25%';
+    } else if (edgePicks.length >= 5) {
+      playType = '5-Man Flex';
+      playPicks = edgePicks.slice(0, 5);
+      payout = 'Up to 10x';
+      breakEven = '54.25%';
+    } else if (edgePicks.length >= 4) {
+      playType = '4-Man Power';
+      playPicks = edgePicks.slice(0, 4);
+      payout = '10x';
+      breakEven = '56.2%';
+    } else if (edgePicks.length >= 3) {
+      playType = '3-Man Power';
+      playPicks = edgePicks.slice(0, 3);
+      payout = '5x';
+      breakEven = '58.5%';
+    } else {
+      playType = '2-Man Power';
+      playPicks = edgePicks.slice(0, 2);
+      payout = '3x';
+      breakEven = '57.7%';
+    }
+
+    report.push(`**${playType}** (${playPicks.length} Pinnacle-edge picks) | Payout: ${payout} | Break-even: ${breakEven}\n`);
+    report.push(`| # | Player | Stat | Line | Pick | Pinnacle Edge |`);
+    report.push(`|---|--------|------|------|------|---------------|`);
+    playPicks.forEach((p, i) => {
+      report.push(`| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${edgePercent(p.pinnacle_edge)} |`);
+    });
+
+    if (edgePicks.length === 1) {
+      report.push(`\n_Only 1 Pinnacle-edge pick — not enough for a parlay. Consider a straight play or wait for more data._`);
+    }
+  }
+  report.push('');
+
   // Performance stats (last 7 days)
   try {
     const perf = db.prepare(`
