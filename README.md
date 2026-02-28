@@ -230,3 +230,19 @@ The `covers_flag` column in `prizepicks_picks` records whether a Covers.com expe
 SELECT covers_flag, COUNT(*) as n, ROUND(AVG(hit) * 100, 1) as hit_pct
 FROM prizepicks_picks WHERE covers_flag IS NOT NULL GROUP BY covers_flag;
 ```
+
+### Correlation Detection
+
+The report automatically detects and flags correlated picks:
+- **Same-game**: Two picks from players in the same game (teammates or opponents)
+- **Positively correlated**: Same team, same direction (both OVER or both UNDER)
+- **Negatively correlated**: Same team, opposite directions
+
+Correlated picks are labeled with group letters (A, B, C...) in the report table and flagged with warnings in the parlay section.
+
+### DNP (Did Not Play) Detection
+
+The results checker auto-detects players who didn't play:
+- If box scores exist but a player has no stats → marked as 🚫 VOID (DNP)
+- Voided picks are excluded from win/loss record and all-time stats
+- PrizePicks voids picks for players who don't play, so this matches their behavior
