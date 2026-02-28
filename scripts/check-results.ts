@@ -2,6 +2,7 @@
  * Check Results — Resolves yesterday's picks against actual box scores
  *
  * Runs updatePickResults for yesterday, then outputs a scorecard to stdout.
+ * Includes Covers.com agreement tracking to measure signal quality over time.
  *
  * Usage: npx tsx scripts/check-results.ts [YYYY-MM-DD]
  * Exit codes: 0 = success, 1 = failure
@@ -35,10 +36,10 @@ async function main() {
   // Build scorecard from DB
   const picks = db.prepare(`
     SELECT player_name, stat_type, line, pick, confidence, ev_estimate,
-           actual_result, hit, pinnacle_line, pinnacle_edge
+           actual_result, hit, pinnacle_line, pinnacle_edge, covers_flag
     FROM prizepicks_picks
     WHERE date = ?
-    ORDER BY ev_estimate DESC
+    ORDER BY ABS(pinnacle_edge) DESC
   `).all(date) as Array<{
     player_name: string;
     stat_type: string;
@@ -50,6 +51,7 @@ async function main() {
     hit: number | null;
     pinnacle_line: number | null;
     pinnacle_edge: number | null;
+    covers_flag: string | null;
   }>;
 
   if (picks.length === 0) {
@@ -64,6 +66,12 @@ async function main() {
   const misses = resolved.filter((p) => p.hit === 0);
   const pending = picks.filter((p) => p.hit === null && p.actual_result !== -1);
 
+  // Covers agreement stats
+  const coversAgreed = resolved.filter((p) => p.covers_flag === 'agrees');
+  const coversContradicted = resolved.filter((p) => p.covers_flag === 'contradicts');
+  const coversAgreedHits = coversAgreed.filter((p) => p.hit === 1);
+  const coversContradictedHits = coversContradicted.filter((p) => p.hit === 1);
+
   // Build scorecard
   const lines: string[] = [];
   lines.push(`# Results Scorecard — ${date}\n`);
@@ -75,12 +83,22 @@ async function main() {
     lines.push(`- Resolved: ${resolved.length}/${picks.length}`);
     if (pending.length > 0) lines.push(`- Pending: ${pending.length}`);
     if (dnps.length > 0) lines.push(`- Voided (DNP): ${dnps.length}`);
+
+    // Covers signal tracking
+    if (coversAgreed.length > 0) {
+      const agreedRate = ((coversAgreedHits.length / coversAgreed.length) * 100).toFixed(1);
+      lines.push(`- Covers agreed: ${coversAgreedHits.length}/${coversAgreed.length} hit (${agreedRate}%)`);
+    }
+    if (coversContradicted.length > 0) {
+      const contradictedRate = ((coversContradictedHits.length / coversContradicted.length) * 100).toFixed(1);
+      lines.push(`- Covers contradicted: ${coversContradictedHits.length}/${coversContradicted.length} hit (${contradictedRate}%)`);
+    }
     lines.push('');
   }
 
   lines.push(`## Pick-by-Pick\n`);
-  lines.push(`| # | Player | Stat | Line | Pick | Actual | Result | Edge |`);
-  lines.push(`|---|--------|------|------|------|--------|--------|------|`);
+  lines.push(`| # | Player | Stat | Line | Pick | Actual | Result | Edge | Covers |`);
+  lines.push(`|---|--------|------|------|------|--------|--------|------|--------|`);
 
   picks.forEach((p, i) => {
     const isDnp = p.actual_result === -1 && p.hit === null;
@@ -88,8 +106,9 @@ async function main() {
     const result = isDnp ? 'VOID' : p.hit === null ? 'PENDING' : p.hit === 1 ? 'HIT' : 'MISS';
     const emoji = isDnp ? '🚫' : p.hit === null ? '⏳' : p.hit === 1 ? '✅' : '❌';
     const edge = p.pinnacle_edge !== null ? `${(p.pinnacle_edge * 100).toFixed(1)}%` : '—';
+    const covers = p.covers_flag === 'agrees' ? '🔒' : p.covers_flag === 'contradicts' ? '⚠️' : '—';
     lines.push(
-      `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${actual} | ${emoji} ${result} | ${edge} |`
+      `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${actual} | ${emoji} ${result} | ${edge} | ${covers} |`
     );
   });
 
@@ -103,7 +122,7 @@ async function main() {
       if (confPicks.length === 0) continue;
       const confHits = confPicks.filter((p) => p.hit === 1).length;
       const rate = ((confHits / confPicks.length) * 100).toFixed(0);
-      lines.push(`- ${'\u2B50'.repeat(c)}: ${confHits}/${confPicks.length} (${rate}%)`);
+      lines.push(`- ${'⭐'.repeat(c)}: ${confHits}/${confPicks.length} (${rate}%)`);
     }
     lines.push('');
   }
@@ -121,6 +140,30 @@ async function main() {
     if (allTime.total > 0) {
       const rate = ((allTime.hits / allTime.total) * 100).toFixed(1);
       lines.push(`## All-Time: ${allTime.hits}/${allTime.total} (${rate}%)`);
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  // All-time Covers signal quality
+  try {
+    const coversAll = db.prepare(`
+      SELECT
+        covers_flag,
+        COUNT(*) as total,
+        SUM(CASE WHEN hit = 1 THEN 1 ELSE 0 END) as hits
+      FROM prizepicks_picks
+      WHERE hit IS NOT NULL AND covers_flag IS NOT NULL
+      GROUP BY covers_flag
+    `).all() as Array<{ covers_flag: string; total: number; hits: number }>;
+
+    if (coversAll.length > 0) {
+      lines.push(`\n## All-Time Covers Signal\n`);
+      for (const row of coversAll) {
+        const rate = ((row.hits / row.total) * 100).toFixed(1);
+        const label = row.covers_flag === 'agrees' ? '🔒 Agreed' : '⚠️ Contradicted';
+        lines.push(`- ${label}: ${row.hits}/${row.total} (${rate}%)`);
+      }
     }
   } catch {
     // Non-fatal
