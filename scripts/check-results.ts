@@ -58,10 +58,11 @@ async function main() {
   }
 
   // Compute stats
+  const dnps = picks.filter((p) => p.actual_result === -1 && p.hit === null);
   const resolved = picks.filter((p) => p.hit !== null);
   const hits = resolved.filter((p) => p.hit === 1);
   const misses = resolved.filter((p) => p.hit === 0);
-  const pending = picks.filter((p) => p.hit === null);
+  const pending = picks.filter((p) => p.hit === null && p.actual_result !== -1);
 
   // Build scorecard
   const lines: string[] = [];
@@ -73,6 +74,7 @@ async function main() {
     lines.push(`- Record: **${hits.length}-${misses.length}** (${hitRate}% hit rate)`);
     lines.push(`- Resolved: ${resolved.length}/${picks.length}`);
     if (pending.length > 0) lines.push(`- Pending: ${pending.length}`);
+    if (dnps.length > 0) lines.push(`- Voided (DNP): ${dnps.length}`);
     lines.push('');
   }
 
@@ -81,9 +83,10 @@ async function main() {
   lines.push(`|---|--------|------|------|------|--------|--------|------|`);
 
   picks.forEach((p, i) => {
-    const actual = p.actual_result !== null ? p.actual_result.toString() : '—';
-    const result = p.hit === null ? 'PENDING' : p.hit === 1 ? 'HIT' : 'MISS';
-    const emoji = p.hit === null ? '⏳' : p.hit === 1 ? '✅' : '❌';
+    const isDnp = p.actual_result === -1 && p.hit === null;
+    const actual = isDnp ? 'DNP' : p.actual_result !== null ? p.actual_result.toString() : '—';
+    const result = isDnp ? 'VOID' : p.hit === null ? 'PENDING' : p.hit === 1 ? 'HIT' : 'MISS';
+    const emoji = isDnp ? '🚫' : p.hit === null ? '⏳' : p.hit === 1 ? '✅' : '❌';
     const edge = p.pinnacle_edge !== null ? `${(p.pinnacle_edge * 100).toFixed(1)}%` : '—';
     lines.push(
       `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${actual} | ${emoji} ${result} | ${edge} |`

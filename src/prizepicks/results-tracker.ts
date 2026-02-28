@@ -292,6 +292,9 @@ export async function checkResults(date: string): Promise<PickResult[]> {
   }
 
   // Match picks to results
+  // Check if games have been played (if we have ANY box score data, games happened)
+  const gamesPlayed = allPlayerStats.size > 0;
+
   const results: PickResult[] = [];
   for (const pick of picks) {
     const stats = fuzzyMatchPlayer(pick.player_name, allPlayerStats);
@@ -303,14 +306,20 @@ export async function checkResults(date: string): Promise<PickResult[]> {
       hit = pick.pick === 'OVER' ? actual > pick.line : actual < pick.line;
     }
 
+    // DNP detection: if games have been played but this player has no stats,
+    // they didn't play. Mark as void (actual = -1, hit = null) so picks don't
+    // stay pending forever. PrizePicks voids DNP picks.
+    const isDnp = gamesPlayed && stats === undefined && actual === null;
+
     results.push({
       pickId: pick.id,
       playerName: pick.player_name,
       statType: pick.stat_type,
       line: pick.line,
       pick: pick.pick as 'OVER' | 'UNDER',
-      actualResult: actual,
-      hit,
+      actualResult: isDnp ? -1 : actual,
+      hit: isDnp ? null : hit,
+      ...(isDnp ? { dnp: true } : {}),
     });
   }
 
@@ -339,6 +348,18 @@ export async function updatePickResults(date: string): Promise<number> {
   `).all(date) as Array<{ id: number; player_name: string; stat_type: string; line: number; pick: string; pinnacle_edge: number | null }>;
 
   for (const r of results) {
+    const isDnp = (r as any).dnp === true;
+    if (isDnp) {
+      // Player didn't play — mark as void (actual_result = -1, hit = NULL)
+      db.prepare(`
+        UPDATE prizepicks_picks
+        SET actual_result = -1, hit = NULL, resolved_at = datetime('now')
+        WHERE id = ?
+      `).run(r.pickId);
+      updated++;
+      console.error(`  [DNP] ${r.playerName} — voided (did not play)`);
+      continue;
+    }
     if (r.actualResult !== null) {
       stmt.run(r.actualResult, r.hit ? 1 : 0, r.pickId);
       updated++;
