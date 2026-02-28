@@ -256,14 +256,14 @@ async function main() {
     const parlayCorrelations = detectCorrelations(playPicks);
 
     report.push(
-      `| # | Player | Stat | Line | Pick | Pinnacle Edge | Covers |`
+      `| # | Player | Stat | PP Line | Pinnacle | Edge | Pick | Covers |`
     );
     report.push(
-      `|---|--------|------|------|------|---------------|--------|`
+      `|---|--------|------|---------|----------|------|------|--------|`
     );
     playPicks.forEach((p, i) => {
       report.push(
-        `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${edgePercent(p.pinnacle_edge)} | ${coversDisplay(p.covers_flag)} |`
+        `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pinnacle_line} | ${edgePercent(p.pinnacle_edge)} | ${p.pick} | ${coversDisplay(p.covers_flag)} |`
       );
     });
 
