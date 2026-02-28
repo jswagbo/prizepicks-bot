@@ -288,7 +288,7 @@ async function fetchOddsApiIoProps(): Promise<BookLine[]> {
 
 /**
  * Fetch Pinnacle-only lines. These are the sharpest book lines.
- * Cached separately since sharps-intel uses them independently.
+ * Cached separately for independent use.
  */
 export async function fetchPinnacleLines(): Promise<BookLine[]> {
   if (pinnacleCache && Date.now() - pinnacleCache.timestamp < CACHE_TTL) {

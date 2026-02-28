@@ -1,7 +1,7 @@
 /**
- * Daily Pipeline — Standalone data pipeline script
+ * Daily Pipeline — Pure Pinnacle Divergence Engine
  *
- * Fetches PrizePicks NBA projections, scores them against Pinnacle lines,
+ * Fetches PrizePicks NBA projections, scores them by Pinnacle line divergence,
  * ranks by edge, saves top 10 to database, builds a parlay, and outputs
  * a JSON summary to stdout.
  *
@@ -13,7 +13,6 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 
 // Redirect ALL console output to stderr so stdout is reserved for JSON only.
-// Imported modules (odds-service, nba-stats, etc.) may use console.log internally.
 const _origLog = console.log;
 console.log = (...args: unknown[]) => console.error(...args);
 
@@ -21,12 +20,12 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 import { getProjections } from '../src/prizepicks/prizepicks-client';
 import { getTodaysGames } from '../src/prizepicks/nba-stats-client';
-import { analyzeMatchup } from '../src/prizepicks/matchup-analyzer';
 import {
   scoreProjection,
   rankProjections,
   buildParlay,
   savePicks,
+  resetPinnacleCache,
   type ScoredPick,
 } from '../src/prizepicks/pick-scorer';
 import { initializeDatabase, getDatabase } from '../src/core/db/database';
@@ -48,26 +47,19 @@ const TOP_N = 10;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function buildTeamLookups(games: Array<{ homeTeam: string; awayTeam: string; spread: number | null }>) {
-  const spreadByTeam: Record<string, number | null> = {};
-  const homeAwayByTeam: Record<string, 'home' | 'away'> = {};
   const opponentByTeam: Record<string, string> = {};
 
   for (const g of games) {
-    spreadByTeam[g.homeTeam] = g.spread;
-    spreadByTeam[g.awayTeam] = g.spread ? -g.spread : null;
-    homeAwayByTeam[g.homeTeam] = 'home';
-    homeAwayByTeam[g.awayTeam] = 'away';
     opponentByTeam[g.homeTeam] = g.awayTeam;
     opponentByTeam[g.awayTeam] = g.homeTeam;
   }
 
-  return { spreadByTeam, homeAwayByTeam, opponentByTeam };
+  return { opponentByTeam };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Initialize database
   initializeDatabase({ path: path.resolve(__dirname, '../data/fund.db') });
 
   // 1. Fetch projections
@@ -77,14 +69,14 @@ async function main() {
     throw new Error('No NBA projections returned — PrizePicks API may be down');
   }
 
-  // 2. Fetch today's games + spreads
+  // 2. Fetch today's games
   const games = await getTodaysGames();
   console.error(`Games today: ${games.length}`);
   if (games.length === 0) {
     throw new Error('No games found for today');
   }
 
-  const { spreadByTeam, homeAwayByTeam, opponentByTeam } = buildTeamLookups(games);
+  const { opponentByTeam } = buildTeamLookups(games);
 
   // 3. Filter to standard, team-level, target stat types
   const filtered = projections.filter(
@@ -109,18 +101,13 @@ async function main() {
   }
   console.error(`Sampled: ${sampled.length} from ${Object.keys(byTeam).length} teams (max ${maxPerTeam}/team)`);
 
-  // 5. Analyze + score each projection
+  // 5. Score each projection by Pinnacle divergence
+  resetPinnacleCache(); // fresh Pinnacle data for this run
   const analyzed: ScoredPick[] = [];
   for (const proj of sampled) {
     try {
       const opponent = opponentByTeam[proj.team] || '';
-      const homeAway = homeAwayByTeam[proj.team] || 'away';
-      const spread = spreadByTeam[proj.team] || null;
-
-      const matchup = await analyzeMatchup(
-        proj.playerName, proj.statType, opponent, proj.line, homeAway, spread
-      );
-      const score = await scoreProjection(proj, matchup);
+      const score = await scoreProjection(proj, opponent);
       analyzed.push(score);
       await sleep(THROTTLE_MS);
     } catch (e) {
@@ -134,14 +121,14 @@ async function main() {
   }
 
   // 5b. Filter to picks with Pinnacle data
-  const withPinnacle = analyzed.filter((p) => p.pinnacleLine !== null && p.pinnacleLine !== undefined);
+  const withPinnacle = analyzed.filter((p) => p.pinnacleLine !== null);
   console.error(`Pinnacle data: ${withPinnacle.length}/${analyzed.length} scored picks have Pinnacle lines`);
 
   if (withPinnacle.length === 0) {
     throw new Error('No picks with Pinnacle data — cannot rank');
   }
 
-  // 6. Rank (only Pinnacle-backed picks)
+  // 6. Rank by absolute Pinnacle edge
   const ranked = rankProjections(withPinnacle);
 
   // 7. Save top N to database
@@ -171,8 +158,8 @@ async function main() {
     gamesCount: games.length,
     sampledCount: sampled.length,
     analyzedCount: analyzed.length,
+    pinnacleCount: withPinnacle.length,
     savedCount,
-    spreads: spreadByTeam,
     topPicks: ranked.slice(0, 20).map((p) => ({
       playerName: p.projection.playerName,
       team: p.projection.team,
@@ -184,8 +171,6 @@ async function main() {
       ev: p.ev,
       pinnacleLine: p.pinnacleLine,
       pinnacleEdge: p.pinnacleEdge,
-      vegasTotal: p.vegasTotal,
-      sharpProjection: p.sharpProjection,
       reasoning: p.reasoning,
     })),
     parlay: {

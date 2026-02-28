@@ -1,6 +1,7 @@
 /**
  * Generate Report — Reads today's picks from DB and formats a markdown report
  *
+ * Annotates each pick with Covers.com expert agreement/disagreement.
  * Outputs the report to stdout AND saves to the memory file.
  *
  * Usage: npx tsx scripts/generate-report.ts [YYYY-MM-DD]
@@ -14,6 +15,10 @@ import * as fs from 'fs';
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 import { initializeDatabase, getDatabase } from '../src/core/db/database';
+import {
+  checkCoversAlignment,
+  getCoversExpertPicks,
+} from '../src/prizepicks/covers-intel';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,55 +59,52 @@ function edgePercent(edge: number | null): string {
   return `${edge > 0 ? '+' : ''}${(edge * 100).toFixed(1)}%`;
 }
 
-function formatPick(pick: DBPick, rank: number): string {
+async function formatPick(pick: DBPick, rank: number): Promise<string> {
   const lines: string[] = [];
-  lines.push(`**${rank}. ${pick.player_name} — ${pick.stat_type} ${pick.pick} ${pick.line}**`);
+  lines.push(
+    `**${rank}. ${pick.player_name} — ${pick.stat_type} ${pick.pick} ${pick.line}**`
+  );
 
   // Pinnacle edge
   if (pick.pinnacle_line !== null) {
-    lines.push(`- Pinnacle: ${pick.pinnacle_line} vs PP ${pick.line} -> ${edgePercent(pick.pinnacle_edge)} edge`);
+    lines.push(
+      `- Pinnacle: ${pick.pinnacle_line} vs PP ${pick.line} -> ${edgePercent(pick.pinnacle_edge)} edge`
+    );
   } else {
     lines.push(`- Pinnacle: N/A`);
   }
 
-  // Vegas total
-  if (pick.vegas_total !== null) {
-    const level = pick.vegas_total > 228 ? 'high' : pick.vegas_total < 215 ? 'low' : 'neutral';
-    lines.push(`- Vegas total: ${pick.vegas_total} (${level})`);
-  }
-
-  // Team total
-  if (pick.team_total !== null) {
-    lines.push(`- Team total: ${pick.team_total}`);
-  }
-
-  // Sharp projection
-  if (pick.sharp_projection !== null) {
-    const direction = pick.sharp_projection > pick.line ? 'OVER' : 'UNDER';
-    lines.push(`- Sharp projection: ${pick.sharp_projection.toFixed(1)} (${direction})`);
-  }
-
-  // Score + EV
-  lines.push(`- Confidence: ${confidenceStars(pick.confidence)} | EV: ${pick.ev_estimate.toFixed(4)}`);
-
-  // Blowout risk
-  if (pick.game_spread !== null) {
-    const absSpread = Math.abs(pick.game_spread);
-    if (absSpread >= 8) {
-      lines.push(`- Blowout risk: ${absSpread.toFixed(1)}pt spread`);
-    } else {
-      lines.push(`- Spread: ${absSpread.toFixed(1)}pt (no blowout risk)`);
-    }
-  }
+  // Confidence
+  lines.push(
+    `- Confidence: ${confidenceStars(pick.confidence)} | Edge: ${pick.ev_estimate.toFixed(4)}`
+  );
 
   // Matchup context
   const parts: string[] = [];
   if (pick.opponent) parts.push(`vs ${pick.opponent}`);
-  if (pick.home_away) parts.push(pick.home_away.toUpperCase());
-  if (pick.matchup_grade) parts.push(`Grade: ${pick.matchup_grade}`);
   if (parts.length > 0) lines.push(`- Matchup: ${parts.join(' | ')}`);
 
-  // Reasoning (first 2 sentences)
+  // Covers expert alignment
+  try {
+    const alignment = await checkCoversAlignment(
+      pick.player_name,
+      pick.stat_type,
+      pick.pick as 'OVER' | 'UNDER'
+    );
+    if (alignment) {
+      if (alignment.alignment === 'agree') {
+        lines.push(`- \uD83D\uDD12 Covers agrees (${alignment.expertName})`);
+      } else {
+        lines.push(
+          `- \u26A0\uFE0F Covers contradicts (${alignment.expertName})`
+        );
+      }
+    }
+  } catch {
+    // Non-fatal — skip Covers annotation
+  }
+
+  // Reasoning
   if (pick.reasoning) {
     const sentences = pick.reasoning.split('. ').slice(0, 3).join('. ');
     lines.push(`- Why: ${sentences}`);
@@ -120,16 +122,23 @@ async function main() {
   const date = process.argv[2] || new Date().toISOString().split('T')[0];
 
   // Fetch picks for the date
-  const picks = db.prepare(`
+  const picks = db
+    .prepare(
+      `
     SELECT * FROM prizepicks_picks
     WHERE date = ?
     ORDER BY ev_estimate DESC
-  `).all(date) as DBPick[];
+  `
+    )
+    .all(date) as DBPick[];
 
   if (picks.length === 0) {
     console.error(`No picks found for ${date}. Run daily-pipeline.ts first.`);
     process.exit(1);
   }
+
+  // Pre-fetch Covers picks (single call, cached)
+  await getCoversExpertPicks().catch(() => []);
 
   // Build report
   const report: string[] = [];
@@ -141,28 +150,31 @@ async function main() {
     const key = [p.team, p.opponent].sort().join(' vs ');
     if (!gamesSet.has(key)) gamesSet.set(key, p);
   }
-  report.push(`## Today's Games + Spreads\n`);
-  for (const [matchup, pick] of gamesSet) {
-    const spread = pick.game_spread !== null ? `spread: ${pick.game_spread}` : 'spread: N/A';
-    const total = pick.vegas_total !== null ? `O/U: ${pick.vegas_total}` : '';
-    report.push(`- ${matchup} | ${spread} ${total}`);
+  report.push(`## Today's Games\n`);
+  for (const [matchup] of gamesSet) {
+    report.push(`- ${matchup}`);
   }
   report.push('');
 
-  // Top picks
+  // Top picks with Covers annotations
   report.push(`## Top ${picks.length} Value Picks\n`);
-  picks.forEach((pick, i) => {
-    report.push(formatPick(pick, i + 1));
+  for (let i = 0; i < picks.length; i++) {
+    const formatted = await formatPick(picks[i], i + 1);
+    report.push(formatted);
     report.push('');
-  });
+  }
 
-  // Top 10 Pinnacle Divergences — always shown, queries all picks for today
-  const allPicks = db.prepare(`
+  // Top 10 Pinnacle Divergences
+  const allPicks = db
+    .prepare(
+      `
     SELECT * FROM prizepicks_picks
     WHERE date = ? AND pinnacle_line IS NOT NULL AND pinnacle_edge IS NOT NULL
     ORDER BY ABS(pinnacle_edge) DESC
     LIMIT 10
-  `).all(date) as DBPick[];
+  `
+    )
+    .all(date) as DBPick[];
 
   report.push(`## Top 10 Pinnacle Divergences\n`);
   if (allPicks.length === 0) {
@@ -179,19 +191,23 @@ async function main() {
   }
   report.push('');
 
-
-  // ─── Best Play of the Day ─────────────────────────────────────────────────
-  // Uses Pinnacle-edge picks to recommend the optimal PrizePicks entry
-  const edgePicks = db.prepare(`
+  // Best Play of the Day
+  const edgePicks = db
+    .prepare(
+      `
     SELECT * FROM prizepicks_picks
     WHERE date = ? AND pinnacle_edge IS NOT NULL AND pinnacle_edge != 0
     ORDER BY ABS(pinnacle_edge) DESC
-  `).all(date) as DBPick[];
+  `
+    )
+    .all(date) as DBPick[];
 
-  report.push(`## 🎯 Best Play of the Day\n`);
+  report.push(`## \uD83C\uDFAF Best Play of the Day\n`);
 
   if (edgePicks.length === 0) {
-    report.push(`_No Pinnacle-edge picks available. No recommended play._\n`);
+    report.push(
+      `_No Pinnacle-edge picks available. No recommended play._\n`
+    );
   } else {
     let playType: string;
     let playPicks: DBPick[];
@@ -225,29 +241,39 @@ async function main() {
       breakEven = '57.7%';
     }
 
-    report.push(`**${playType}** (${playPicks.length} Pinnacle-edge picks) | Payout: ${payout} | Break-even: ${breakEven}\n`);
+    report.push(
+      `**${playType}** (${playPicks.length} Pinnacle-edge picks) | Payout: ${payout} | Break-even: ${breakEven}\n`
+    );
     report.push(`| # | Player | Stat | Line | Pick | Pinnacle Edge |`);
     report.push(`|---|--------|------|------|------|---------------|`);
     playPicks.forEach((p, i) => {
-      report.push(`| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${edgePercent(p.pinnacle_edge)} |`);
+      report.push(
+        `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${edgePercent(p.pinnacle_edge)} |`
+      );
     });
 
     if (edgePicks.length === 1) {
-      report.push(`\n_Only 1 Pinnacle-edge pick — not enough for a parlay. Consider a straight play or wait for more data._`);
+      report.push(
+        `\n_Only 1 Pinnacle-edge pick — not enough for a parlay. Consider a straight play or wait for more data._`
+      );
     }
   }
   report.push('');
 
   // Performance stats (last 7 days)
   try {
-    const perf = db.prepare(`
+    const perf = db
+      .prepare(
+        `
       SELECT
         COUNT(*) as total,
         SUM(CASE WHEN hit = 1 THEN 1 ELSE 0 END) as hits,
         SUM(CASE WHEN hit = 0 THEN 1 ELSE 0 END) as misses
       FROM prizepicks_picks
       WHERE hit IS NOT NULL AND date >= date('now', '-7 days')
-    `).get() as { total: number; hits: number; misses: number };
+    `
+      )
+      .get() as { total: number; hits: number; misses: number };
 
     if (perf.total > 0) {
       const rate = ((perf.hits / perf.total) * 100).toFixed(1);

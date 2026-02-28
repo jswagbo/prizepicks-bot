@@ -1,13 +1,13 @@
 /**
  * PrizePicks Module
- * 
- * Data-driven sports betting analysis for PrizePicks player props.
+ *
+ * Pure Pinnacle-divergence engine for player prop analysis.
  */
 
 export * from './prizepicks-client';
 export * from './nba-stats-client';
-export * from './matchup-analyzer';
 export * from './results-tracker';
 export * from './pick-scorer';
 export * from './injury-news-client';
-export * from './expert-picks-client';
+export * from './odds-service';
+export * from './covers-intel';
