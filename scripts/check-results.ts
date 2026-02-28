@@ -97,8 +97,8 @@ async function main() {
   }
 
   lines.push(`## Pick-by-Pick\n`);
-  lines.push(`| # | Player | Stat | Line | Pick | Actual | Result | Edge | Covers |`);
-  lines.push(`|---|--------|------|------|------|--------|--------|------|--------|`);
+  lines.push(`| # | Player | Stat | PP Line | Pinnacle | Pick | Actual | Result | Edge | Covers |`);
+  lines.push(`|---|--------|------|---------|----------|------|--------|--------|------|--------|`);
 
   picks.forEach((p, i) => {
     const isDnp = p.actual_result === -1 && p.hit === null;
@@ -108,7 +108,7 @@ async function main() {
     const edge = p.pinnacle_edge !== null ? `${(p.pinnacle_edge * 100).toFixed(1)}%` : '—';
     const covers = p.covers_flag === 'agrees' ? '🔒' : p.covers_flag === 'contradicts' ? '⚠️' : '—';
     lines.push(
-      `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pick} | ${actual} | ${emoji} ${result} | ${edge} | ${covers} |`
+      `| ${i + 1} | ${p.player_name} | ${p.stat_type} | ${p.line} | ${p.pinnacle_line ?? "—"} | ${p.pick} | ${actual} | ${emoji} ${result} | ${edge} | ${covers} |`
     );
   });
 
