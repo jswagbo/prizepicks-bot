@@ -306,10 +306,17 @@ export async function checkResults(date: string): Promise<PickResult[]> {
       hit = pick.pick === 'OVER' ? actual > pick.line : actual < pick.line;
     }
 
-    // DNP detection: if games have been played but this player has no stats,
-    // they didn't play. Mark as void (actual = -1, hit = null) so picks don't
-    // stay pending forever. PrizePicks voids DNP picks.
-    const isDnp = gamesPlayed && stats === undefined && actual === null;
+    // DNP detection: player didn't play if:
+    // 1. Games played but player not in any box score (stats === undefined), OR
+    // 2. Player appears in box score but with 0 minutes (sat on bench, inactive)
+    // 3. Player appears but ALL stat values are 0 (fallback for missing MIN field)
+    // PrizePicks voids DNP picks — we should too.
+    const hasZeroMinutes = stats !== undefined && (stats['MIN'] === 0 || stats['MIN'] === undefined);
+    const allStatsZero = stats !== undefined && Object.values(stats).every(v => v === 0);
+    const isDnp = gamesPlayed && (
+      stats === undefined ||
+      (hasZeroMinutes && allStatsZero)
+    );
 
     results.push({
       pickId: pick.id,
