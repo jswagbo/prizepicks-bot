@@ -66,12 +66,13 @@ npx tsx scripts/check-results.ts 2026-02-27
 ```
 
 Pipeline steps (daily-pipeline.ts):
-1. Fetches today's PrizePicks NBA projections (standard lines only)
-2. Fetches Pinnacle lines from The Odds API
-3. Scores each projection: `edge = (pinnacle_line - pp_line) / pp_line`
-4. Filters to Pinnacle-backed picks only (no Pinnacle data = excluded)
-5. Ranks by absolute edge, saves top 10 to database (dedupes on re-run)
-6. Outputs JSON summary to stdout
+1. Fetches today's PrizePicks `NBA`, `NBA1H`, and `NBA1Q` projections separately (standard lines only)
+2. Keeps full-game `eventType=team` lines and period-board `eventType=team_with_duration` lines
+3. Fetches Pinnacle lines from The Odds API
+4. Scores each projection: `edge = (pinnacle_line - pp_line) / pp_line`
+5. Filters to Pinnacle-backed picks only (no Pinnacle data = excluded)
+6. Ranks by absolute edge, saves top 10 to database (dedupes on re-run)
+7. Outputs JSON summary to stdout, including per-league projection counts
 
 ## Architecture
 
@@ -193,7 +194,8 @@ sqlite3 data/fund.db "SELECT COUNT(*) as total, SUM(hit) as hits, ROUND(100.0*SU
 
 ## Important Rules
 
-- **Standard lines only** — PrizePicks has standard, demon, and goblin lines. Only `odds_type === 'standard'` full-game lines are analyzed.
+- **Standard lines only** — PrizePicks has standard, demon, and goblin lines. Only `odds_type === 'standard'` lines are analyzed.
+- **Period props included** — NBA first-half and first-quarter props are pulled as separate PrizePicks leagues (`NBA1H`, `NBA1Q`) and kept when `event_type === 'team_with_duration'`.
 - **Pinnacle is the only signal** — No game environment, matchup grades, expert consensus, or sharp projections in scoring.
 - **No hardcoded data** — All data comes from live APIs and DB cache.
 

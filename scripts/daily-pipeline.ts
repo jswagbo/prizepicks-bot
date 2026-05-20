@@ -63,18 +63,28 @@ function buildTeamLookups(games: Array<{ homeTeam: string; awayTeam: string; spr
 async function main() {
   initializeDatabase({ path: path.resolve(__dirname, '../data/fund.db') });
 
-  // 1. Fetch projections
-  const projections = await getProjections('NBA');
-  console.error(`NBA projections: ${projections.length}`);
+  // 1. Fetch projections. PrizePicks exposes first-half and first-quarter
+  // props as separate leagues, not as fields on the full-game NBA board.
+  const projectionLeagues = ['NBA', 'NBA1H', 'NBA1Q'];
+  const projectionsByLeague = await Promise.all(
+    projectionLeagues.map(async (league) => ({
+      league,
+      projections: await getProjections(league),
+    }))
+  );
+  for (const { league, projections: leagueProjections } of projectionsByLeague) {
+    console.error(`${league} projections: ${leagueProjections.length}`);
+  }
+  const projections = projectionsByLeague.flatMap((r) => r.projections);
   if (projections.length === 0) {
-    throw new Error('No NBA projections returned — PrizePicks API may be down');
+    throw new Error('No NBA/NBA1H/NBA1Q projections returned — PrizePicks API may be down');
   }
 
   // 2. Fetch today's games
   const games = await getTodaysGames();
   console.error(`Games today: ${games.length}`);
   if (games.length === 0) {
-    throw new Error('No games found for today');
+    console.error('No games found from stats/odds service; falling back to PrizePicks description for opponent labels');
   }
 
   const { opponentByTeam } = buildTeamLookups(games);
@@ -83,7 +93,7 @@ async function main() {
   const filtered = projections.filter(
     (p) =>
       p.oddsType === 'standard' &&
-      p.eventType === 'team' &&
+      (p.eventType === 'team' || p.eventType === 'team_with_duration') &&
       TARGET_STATS.some((s) => p.statType.includes(s))
   );
   console.error(`Filtered projections: ${filtered.length}`);
@@ -107,7 +117,7 @@ async function main() {
   const analyzed: ScoredPick[] = [];
   for (const proj of sampled) {
     try {
-      const opponent = opponentByTeam[proj.team] || '';
+      const opponent = opponentByTeam[proj.team] || proj.description.replace(/\s+1[HQ]$/i, '');
       const score = await scoreProjection(proj, opponent);
       analyzed.push(score);
       await sleep(THROTTLE_MS);
@@ -179,6 +189,9 @@ async function main() {
   const summary = {
     date: today,
     totalProjections: projections.length,
+    projectionCounts: Object.fromEntries(
+      projectionsByLeague.map(({ league, projections: leagueProjections }) => [league, leagueProjections.length])
+    ),
     gamesCount: games.length,
     sampledCount: sampled.length,
     analyzedCount: analyzed.length,

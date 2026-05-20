@@ -234,20 +234,33 @@ export async function getProjections(league?: string): Promise<PrizePicksProject
     projections = runScraperFallback();
   }
 
-  // Filter to standard lines only (exclude demon/goblin juiced lines)
-  // and full-game props only (exclude 1H/1Q duration props)
-  // IMPORTANT: This runs on ALL paths (API, scraper fallback, error fallback)
+  // Filter to standard lines only (exclude demon/goblin juiced lines).
+  // Full-game NBA lines use eventType="team"; PP exposes first-half/first-quarter
+  // boards as separate leagues (NBA1H/NBA1Q) with eventType="team_with_duration".
+  // IMPORTANT: This runs on ALL paths (API, scraper fallback, error fallback).
   const beforeFilter = projections.length;
-  projections = projections.filter(
-    (p) => p.oddsType === 'standard' && p.eventType === 'team'
-  );
-  console.log(`[PrizePicks] ${beforeFilter} total → ${projections.length} standard full-game lines (filtered ${beforeFilter - projections.length} demon/goblin/duration)`);
+  projections = projections.filter((p) => p.oddsType === 'standard');
 
   if (league) {
     projections = projections.filter(
       (p) => p.league.toUpperCase() === league.toUpperCase()
     );
   }
+
+  const beforeEventFilter = projections.length;
+  projections = projections.filter((p) => {
+    const leagueName = p.league.toUpperCase();
+    if (leagueName === 'NBA1H' || leagueName === 'NBA1Q') {
+      return p.eventType === 'team_with_duration';
+    }
+    return p.eventType === 'team';
+  });
+
+  const leagueLabel = league ? `${league.toUpperCase()} ` : '';
+  console.log(
+    `[PrizePicks] ${beforeFilter} total → ${projections.length} ${leagueLabel}standard lines ` +
+    `(filtered ${beforeFilter - beforeEventFilter} demon/goblin, ${beforeEventFilter - projections.length} unsupported event types)`
+  );
 
   return projections;
 }
