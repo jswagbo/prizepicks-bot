@@ -63,6 +63,10 @@ npx tsx scripts/generate-report.ts 2026-02-27
 # 3. Check results against ESPN box scores (run next morning)
 npx tsx scripts/check-results.ts             # defaults to yesterday
 npx tsx scripts/check-results.ts 2026-02-27
+
+# Optional: pull NBA.com tracking opportunity stats for assist/rebound research
+python3 scripts/nba-stats.py opportunity-stats "Josh Hart" --season 2025-26 --season-type Playoffs
+python3 scripts/nba-stats.py opportunity-stats "Josh Hart" --season 2025-26 --season-type Playoffs --opponent BOS --last-n 5
 ```
 
 Pipeline steps (daily-pipeline.ts):
@@ -144,6 +148,8 @@ This is purely informational — it does NOT affect the score.
 | [The Odds API](https://the-odds-api.com) | API key (free tier) | Pinnacle player prop lines |
 | [ESPN](https://www.espn.com) | None (scraped) | Injury reports, game logs (fallback), box scores for results |
 | [Covers.com](https://www.covers.com) | None (scraped) | Expert prop picks (annotation only) |
+
+The `opportunity-stats` bridge uses NBA.com player tracking through `nba_api` and returns assist/rebound opportunity inputs used by the manual props skill: potential assists, assist points created, passes made/received, touches, time of possession, rebound chances, contested/uncontested rebounds, deferred chances, and rebound chance conversion.
 
 ## Key Files
 

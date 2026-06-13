@@ -22,7 +22,7 @@ function callPythonStats(args: string[]): unknown | null {
   try {
     const result = execSync(
       `${VENV_PYTHON} ${STATS_SCRIPT} ${args.map(a => JSON.stringify(a)).join(' ')}`,
-      { timeout: 30000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+      { timeout: 60000, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
     );
     return JSON.parse(result.trim());
   } catch (err) {
@@ -95,6 +95,30 @@ export interface PlayerAverages {
   threePointersMade: number;
   fantasyScore: number;
   ptsRebsAsts: number;
+}
+
+export interface OpportunityStatsOptions {
+  season?: string;
+  seasonType?: 'Regular Season' | 'Playoffs' | string;
+  lastNGames?: number;
+  opponent?: string;
+}
+
+export interface OpportunityStats {
+  playerName: string;
+  playerId: string;
+  teamId: string;
+  team: string;
+  season: string;
+  seasonType: string;
+  lastNGames: number;
+  opponent: string | null;
+  available: boolean;
+  error?: string;
+  passing: Record<string, number | string | null> | null;
+  rebounding: Record<string, number | string | null> | null;
+  possessions: Record<string, number | string | null> | null;
+  catchShoot: Record<string, number | string | null> | null;
 }
 
 // ─── ESPN API Helpers ────────────────────────────────────────────────────────
@@ -256,6 +280,35 @@ export async function getGameLog(
   cacheGameLogs(playerName, 'NBA', entries);
 
   return entries;
+}
+
+/**
+ * Fetch NBA.com tracking opportunity stats for assist/rebound prop research.
+ *
+ * Uses the NBA tracking dashboard through the Python nba_api bridge. The
+ * returned rows include predictive inputs such as POTENTIAL_AST,
+ * AST_POINTS_CREATED, TOUCHES, TIME_OF_POSS, REB_CHANCES, contested/uncontested
+ * rebounds, and rebound chance conversion.
+ */
+export async function getOpportunityStats(
+  playerName: string,
+  options: OpportunityStatsOptions = {}
+): Promise<OpportunityStats | null> {
+  const args = ['opportunity-stats', playerName];
+  if (options.season) {
+    args.push('--season', options.season);
+  }
+  if (options.seasonType) {
+    args.push('--season-type', options.seasonType);
+  }
+  if (options.lastNGames !== undefined) {
+    args.push('--last-n', String(options.lastNGames));
+  }
+  if (options.opponent) {
+    args.push('--opponent', options.opponent);
+  }
+
+  return callPythonStats(args) as OpportunityStats | null;
 }
 
 /**

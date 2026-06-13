@@ -5,6 +5,7 @@ NBA Stats Bridge — pulls data from nba_api and outputs JSON for the TypeScript
 Usage:
   python3 scripts/nba-stats.py player-search "Tyler Herro"
   python3 scripts/nba-stats.py game-log "Tyler Herro" [--season 2025-26]
+  python3 scripts/nba-stats.py opportunity-stats "Tyler Herro" [--season 2025-26] [--season-type Playoffs] [--last-n 5] [--opponent BOS]
   python3 scripts/nba-stats.py today-games
   python3 scripts/nba-stats.py seed-db <sqlite-path> <player1> <player2> ...
 """
@@ -16,7 +17,13 @@ import sqlite3
 from pathlib import Path
 
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playergamelog, scoreboardv2, leaguedashteamstats
+from nba_api.stats.endpoints import (
+    commonplayerinfo,
+    leaguedashptstats,
+    playergamelog,
+    scoreboardv2,
+    leaguedashteamstats,
+)
 from nba_api.live.nba.endpoints import scoreboard as live_scoreboard
 
 
@@ -36,6 +43,147 @@ def player_search(name: str) -> dict | None:
         "team": "",  # nba_api static doesn't include current team easily
         "position": "",
     }
+
+
+def _clean_json_value(value):
+    """Convert pandas/numpy scalar values into strict JSON-safe values."""
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _clean_row(row: dict) -> dict:
+    return {str(k): _clean_json_value(v) for k, v in row.items()}
+
+
+def _find_player(name: str) -> dict | None:
+    results = players.find_players_by_full_name(name)
+    if not results and " " in name:
+        lowered = name.lower()
+        results = players.find_players_by_last_name(name.split()[-1])
+        results = [
+            r for r in results
+            if r.get("is_active") and lowered in r.get("full_name", "").lower()
+        ]
+    return results[0] if results else None
+
+
+def _team_id_for_player(player_id: int) -> tuple[int | None, str]:
+    info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
+    df = info.get_data_frames()[0]
+    if df.empty:
+        return None, ""
+    row = df.iloc[0]
+    team_id = row.get("TEAM_ID")
+    return int(team_id) if team_id else None, str(row.get("TEAM_ABBREVIATION") or "")
+
+
+def _team_id_from_abbr(abbr: str | None) -> int:
+    if not abbr:
+        return 0
+    target = abbr.upper()
+    for team in teams.get_teams():
+        if team.get("abbreviation", "").upper() == target:
+            return int(team["id"])
+    return 0
+
+
+def _player_tracking_row(
+    player_id: int,
+    measure: str,
+    season: str,
+    season_type: str,
+    last_n_games: str,
+    opponent_team_id: int,
+) -> dict | None:
+    time.sleep(0.6)
+    endpoint = leaguedashptstats.LeagueDashPtStats(
+        player_or_team="Player",
+        pt_measure_type=measure,
+        season=season,
+        season_type_all_star=season_type,
+        per_mode_simple="PerGame",
+        last_n_games=last_n_games,
+        opponent_team_id=opponent_team_id,
+        timeout=30,
+    )
+    df = endpoint.get_data_frames()[0]
+    if df.empty or "PLAYER_ID" not in df.columns:
+        return None
+    match = df[df["PLAYER_ID"] == player_id]
+    if match.empty:
+        return None
+    return _clean_row(match.iloc[0].to_dict())
+
+
+def get_opportunity_stats(
+    player_name: str,
+    season: str = "2025-26",
+    season_type: str = "Playoffs",
+    last_n_games: str = "0",
+    opponent_abbr: str | None = None,
+) -> dict:
+    """Get NBA.com tracking opportunity stats for assist/rebound prop research."""
+    p = _find_player(player_name)
+    if not p:
+        return {"playerName": player_name, "available": False, "error": "player_not_found"}
+
+    player_id = int(p["id"])
+    team_id, team_abbr = _team_id_for_player(player_id)
+    opponent_team_id = _team_id_from_abbr(opponent_abbr)
+
+    result = {
+        "playerName": p["full_name"],
+        "playerId": str(player_id),
+        "teamId": str(team_id or ""),
+        "team": team_abbr,
+        "season": season,
+        "seasonType": season_type,
+        "lastNGames": int(last_n_games),
+        "opponent": opponent_abbr.upper() if opponent_abbr else None,
+        "available": True,
+        "passing": None,
+        "rebounding": None,
+        "possessions": None,
+        "catchShoot": None,
+    }
+
+    try:
+        result["passing"] = _player_tracking_row(
+            player_id, "Passing", season, season_type, last_n_games, opponent_team_id
+        )
+        result["rebounding"] = _player_tracking_row(
+            player_id, "Rebounding", season, season_type, last_n_games, opponent_team_id
+        )
+        result["possessions"] = _player_tracking_row(
+            player_id, "Possessions", season, season_type, last_n_games, opponent_team_id
+        )
+        result["catchShoot"] = _player_tracking_row(
+            player_id, "CatchShoot", season, season_type, last_n_games, opponent_team_id
+        )
+        if not any([
+            result["passing"],
+            result["rebounding"],
+            result["possessions"],
+            result["catchShoot"],
+        ]):
+            result["available"] = False
+            result["error"] = "no_tracking_rows"
+    except Exception as e:
+        result["available"] = False
+        result["error"] = str(e)
+
+    return result
 
 
 def get_game_log(player_name: str, season: str = "2025-26") -> list[dict]:
@@ -196,6 +344,34 @@ def main():
         season = sys.argv[4] if len(sys.argv) > 4 and sys.argv[3] == "--season" else "2025-26"
         result = get_game_log(name, season)
         print(json.dumps(result))
+
+    elif cmd == "opportunity-stats":
+        name = sys.argv[2]
+        season = "2025-26"
+        season_type = "Playoffs"
+        last_n_games = "0"
+        opponent = None
+
+        i = 3
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == "--season" and i + 1 < len(sys.argv):
+                season = sys.argv[i + 1]
+                i += 2
+            elif arg == "--season-type" and i + 1 < len(sys.argv):
+                season_type = sys.argv[i + 1]
+                i += 2
+            elif arg == "--last-n" and i + 1 < len(sys.argv):
+                last_n_games = sys.argv[i + 1]
+                i += 2
+            elif arg == "--opponent" and i + 1 < len(sys.argv):
+                opponent = sys.argv[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        result = get_opportunity_stats(name, season, season_type, last_n_games, opponent)
+        print(json.dumps(result, allow_nan=False))
     
     elif cmd == "today-games":
         result = get_today_games()
